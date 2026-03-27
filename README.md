@@ -2,6 +2,20 @@
 
 Dockable QGIS plugin that surfaces iLAND modules and submodules directly from the repository source tree.
 
+Maintainer: Sushil Paudel
+
+## Core Model Citation
+
+This plugin is an integration layer around the original iLand core model.
+
+- Original iLand authors: Werner Rammer and Rupert Seidl.
+- Core model homepage: https://iland-model.org
+- Publications and recommended citations: https://iland-model.org/iLand+publications
+
+Suggested citation text for the core model in derivative tool documentation:
+
+"Rammer, W., and Seidl, R. iLand - the individual-based forest landscape and disturbance model. https://iland-model.org"
+
 ## Features
 
 - Dock widget opens in the left sidebar when plugin is enabled.
