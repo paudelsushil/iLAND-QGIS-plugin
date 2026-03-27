@@ -1,0 +1,21 @@
+[general]
+name=iLAND Workbench
+qgisMinimumVersion=3.28
+qgisMaximumVersion=99.0
+version=0.3.2
+author=iLAND Team
+email=contact@iland-model.org
+description=iLAND workbench for module discovery, runtime orchestration, and processing workflows in QGIS.
+about=Dockable QGIS workbench for exploring iLAND modules, submodules, and project assets.
+tracker=https://github.com/edfm-tum/iland-model/issues
+repository=https://github.com/edfm-tum/iland-model
+homepage=https://iland-model.org
+category=Vector
+icon=icon4.png
+experimental=True
+deprecated=False
+tags=iLAND,forest,landscape,simulation,analysis
+hasProcessingProvider=True
+
+[help]
+changelog=0.3.2 Added cookbook phase-2 support: i18n loading scaffold, Help menu action with local/online docs, and qgis-plugin-ci workflow integration.

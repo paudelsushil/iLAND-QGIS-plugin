@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local packaging output
+dist/
+build/
+
+# Runtime/cache artifacts used only on local machines
+runtimes/
