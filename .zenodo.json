@@ -1,0 +1,36 @@
+{
+  "title": "iLAND Workbench",
+  "description": "QGIS plugin for iLAND-based ecological modeling, installation, and reproducible analysis workflows.",
+  "upload_type": "software",
+  "access_right": "open",
+  "license": "GPL-3.0-or-later",
+  "version": "3.0.0",
+  "creators": [
+    {
+      "name": "Paudel, Sushil",
+      "affiliation":"Clark University, Forest Ecology Research Lab",
+      "orcid": "0000-0001-7411-4519"
+    }
+  ],
+  "keywords": [
+    "QGIS",
+    "iLAND",
+    "forest",
+    "landscape",
+    "simulation",
+    "ecology"
+  ],
+  "related_identifiers": [
+    {
+      "scheme": "url",
+      "identifier": "https://github.com/paudelsushil/iLAND-QGIS-plugin",
+      "relation": "references"
+    },
+    {
+      "scheme": "url",
+      "identifier": "https://iland-model.org",
+      "relation": "isDerivedFrom"
+    }
+  ],
+  "notes": "This plugin is an independent open-source QGIS integration layer around iLAND and is not an official distribution of the iLAND core model."
+}

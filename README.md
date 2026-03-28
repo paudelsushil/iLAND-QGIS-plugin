@@ -1,13 +1,20 @@
 # iLAND Workbench
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19300115.svg)](https://doi.org/10.5281/zenodo.19300115)
+[![Latest Release](https://img.shields.io/github/v/release/paudelsushil/iLAND-QGIS-plugin?label=release)](https://github.com/paudelsushil/iLAND-QGIS-plugin/releases)
+[![Downloads](https://img.shields.io/github/downloads/paudelsushil/iLAND-QGIS-plugin/total?label=downloads)](https://github.com/paudelsushil/iLAND-QGIS-plugin/releases)
+[![QGIS Compatibility](https://img.shields.io/badge/QGIS-3.28%20to%204.99-6aa84f)](https://qgis.org)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Open Issues](https://img.shields.io/github/issues/paudelsushil/iLAND-QGIS-plugin)](https://github.com/paudelsushil/iLAND-QGIS-plugin/issues)
+[![Last Commit](https://img.shields.io/github/last-commit/paudelsushil/iLAND-QGIS-plugin)](https://github.com/paudelsushil/iLAND-QGIS-plugin/commits/main)
+
 Dockable QGIS plugin that surfaces iLAND modules and submodules directly from the repository source tree.
 
 Maintainer: Sushil Paudel
 
-## Core Model Citation
+## Core Model
 
 This plugin is an integration layer around the original iLand core model.
-
 - Original iLand authors: Werner Rammer and Rupert Seidl.
 - Core model homepage: https://iland-model.org
 - Publications and recommended citations: https://iland-model.org/iLand+publications
@@ -16,21 +23,7 @@ Suggested citation text for the core model in derivative tool documentation:
 
 "Rammer, W., and Seidl, R. iLand - the individual-based forest landscape and disturbance model. https://iland-model.org"
 
-## Features
 
-- Dock widget opens in the left sidebar when plugin is enabled.
-- Qt6-first UI implementation with fallback to QGIS bundled Qt/PyQt runtime.
-- Default iLAND logo reused from the repository (`src/iland/res/icon4.png`).
-- Black-text visual style for high readability.
-- iLAND-style GUI sections mirrored from source files:
-  - Workflow (project input and run controls)
-  - Settings (Project/System/Model/Output/Modules taxonomy)
-  - Visualization (controls aligned with iLAND visualization dock)
-  - Scripting (JavaScript editor/workspace placeholders)
-  - Modules (full recursive module/submodule explorer)
-- Dynamic module and recursive submodule discovery from `src/`.
-- Dynamic settings discovery from `src/iland/res/project_file_metadata.txt`.
-- Processing Toolbox provider with first-draft algorithms for QGIS test runs.
 
 ## Core Processing Strategy
 
@@ -40,40 +33,6 @@ Suggested citation text for the core model in derivative tool documentation:
 - QGIS integration layer provides discovery, command preparation, and workflow entry points.
 - For new iLAND versions, plugin updates should focus on UI/schema synchronization and command/provider adapters rather than rebuilding model internals.
 
-## Processing Algorithms (Draft)
-
-- `iLAND: List iLAND modules`
-: exports discovered modules/submodules to JSON.
-- `iLAND: Build iLAND run command`
-: builds a launch command preview without executing the model.
-- `iLAND: Get latest iLAND release info`
-: fetches release metadata from GitHub API to support update-only workflows.
-
-## Runtime Manager (Draft)
-
-The Runtime tab provides a one-click path for non-programmer workflows:
-
-1. Click `Check Latest` to query the latest release from GitHub.
-2. Click `Install Latest (Windows)` to download and extract a Windows runtime asset.
-3. Select an installed runtime in the local list and click `Activate Selected Runtime`.
-4. Use the Workflow tab command copy button; it will prefer the active runtime executable path.
-
-Notes:
-
-- Runtime artifacts are stored in user-local app data (`%LOCALAPPDATA%/iLANDWorkbenchQGIS/runtimes` on Windows).
-- Runtime index and active tag are tracked in user-local app data (`config.json` and `runtimes/index.json`).
-- If no active runtime is set, command templates fall back to `iLANDc.exe`.
-
-## Professional Repository Layout
-
-To keep sharing lightweight and clean:
-
-1. Keep this plugin folder source-only (Python, metadata, icons, docs).
-2. Keep iLAND model source/binaries outside plugin package and reference them via configurable repository root.
-3. Keep runtime downloads and user-specific cache/config in local app-data, not inside git-tracked plugin files.
-4. Publish plugin as a minimal ZIP package for QGIS install.
-
-This avoids copying the full iLAND repository into the plugin and keeps plugin releases small and professional.
 
 ## Plugin Structure
 
@@ -90,55 +49,24 @@ This avoids copying the full iLAND repository into the plugin and keeps plugin r
 - `help/index.html`: bundled local plugin help page.
 - `icon.svg`: plugin icon.
 
-## Development Notes
+## Citation:
+@software{paudel2026iland,
+  author       = {Paudel, Sushil},
+  title        = {{iLAND Workbench: QGIS-based iLAND Workbench for 
+                   hassle-free installation and reproducible analysis 
+                   workflows}},
+  year         = {2026},
+  version      = {3.0.0},
+  publisher    = {Zenodo},
+  doi          = {10.5281/zenodo.19300115},
+  url          = {https://doi.org/10.5281/zenodo.19300115}
+}
 
-- The plugin follows standard QGIS repository conventions: metadata, icon, and classFactory loader.
-- UI uses Qt widgets and is compatible with repository packaging as a plain Python plugin directory.
-- iLAND modules are read from `../src` relative to plugin folder.
-- Plugin help is exposed in QGIS Help -> Plugins menu and opens local `help/index.html` with online fallback.
-- Translation loading is implemented via `i18n/iLAND_Workbench_<locale>.qm` when compiled files are present.
+## References
+When using iLAND Workbench, please also cite the original iLand model. **Recommended references:**
 
-## Translation Workflow (Cookbook)
+- Rammer, W., Thom, D., Baumann, M., Braziunas, K., Dollinger, C., Kerber, J., Mohr, J., Seidl, R. (2024). The individual‑based forest landscape and disturbance model iLand: Overview, progress, and outlook. Ecological Modelling 495, 110785. https://doi.org/10.1016/j.ecolmodel.2024.110785
 
-1. Edit translation sources in `i18n/`.
-2. Generate/update `.ts` using Qt tools (`pylupdate5 iLAND_Workbench.pro`).
-3. Compile `.qm` files (`lrelease iLAND_Workbench_en.ts`, etc.).
-4. Place generated `.qm` files in `i18n/` before packaging.
+- Seidl, R. et al. (2012) “An individual-based process model to simulate landscape-scale forest ecosystem dynamics,” Ecological Modelling, 231, pp. 87–100. Available at: https://doi.org/10.1016/j.ecolmodel.2012.02.015.
 
-## CI Packaging and Release
-
-- GitHub Actions workflow is provided at `.github/workflows/qgis-plugin-ci.yml`.
-- Packaging uses `qgis-plugin-ci package` with plugin path `iLAND_QGIS_plugin`.
-- Optional release publishing uses `qgis-plugin-ci release` and requires secrets:
-  - `OSGEO_USERNAME`
-  - `OSGEO_PASSWORD`
-
-## Local Installation
-
-1. Run `package_plugin.ps1` in `iLAND_QGIS_plugin` to build a clean ZIP.
-2. In QGIS, open `Plugins` -> `Manage and Install Plugins...` -> `Install from ZIP`.
-3. Select `dist/iLAND_Workbench_QGIS.zip` and enable **iLAND Workbench**.
-4. The dock panel opens automatically on the left.
-
-## Packaging Preflight (Required Components)
-
-`package_plugin.ps1` now runs preflight checks before creating the ZIP.
-
-- It fails fast if critical iLAND/plugin components are missing.
-- It warns (but does not fail) if no local `iLANDc.exe` is found.
-
-See [REQUIRED_REPO_COMPONENTS.md](REQUIRED_REPO_COMPONENTS.md) for the exact required list.
-
-Optional override:
-
-- `./package_plugin.ps1 -SkipPreflight` to bypass checks (not recommended for release builds).
-
-## Expected Source Path
-
-The plugin can auto-detect local sibling source or use a configured external root. Configure root in Workflow tab:
-
-- repo root
-  - `iLAND_QGIS_plugin/`
-  - `src/`
-
-If root is set incorrectly, discovery will show no modules until a valid folder containing `src/` is selected.
+- Thom, D. et al. (2024) “Parameters of 150 temperate and boreal tree species and provenances for an individual-based forest landscape and disturbance model,” Data in Brief, 55, p. 110662. Available at: https://doi.org/10.1016/j.dib.2024.110662.

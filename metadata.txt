@@ -19,7 +19,7 @@
 name=iLAND Workbench
 qgisMinimumVersion=3.28
 qgisMaximumVersion=4.99
-version=2.9.0
+version=3.0.0
 author=Sushil Paudel
 email=clarkesushil@gmail.com
 description=QGIS-based iLAND Workbench developed for hassle-free installation and reproducible analysis workflows.
@@ -37,4 +37,4 @@ tags=iLAND,forest,landscape,simulation,analysis
 hasProcessingProvider=True
 
 [help]
-changelog=2.8.0 Added cookbook phase-2 support: i18n loading scaffold, Help menu action with local/online docs, and qgis-plugin-ci workflow integration.
+changelog=2.9.0 Added cookbook phase-2 support: i18n loading scaffold, Help menu action with local/online docs, and qgis-plugin-ci workflow integration.
