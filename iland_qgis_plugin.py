@@ -1,3 +1,20 @@
+# /********************************************************************************************
+##
+# iLAND Workbench — QGIS plugin for iLAND‑based ecological modeling
+# Copyright (C) 2026 Sushil Paudel
+#
+# This plugin is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# A full copy of the license can be found in the <a href="LICENSE">LICENSE file</a>.
+#
+# This plugin integrates iLand, an individual‑based forest landscape and disturbance model.
+# Copyright (C) 2009-2026 Werner Rammer, Rupert Seidl
+# For more information on the original iLand model, see https://iland-model.org
+# ********************************************************************************************/
+
 """Main plugin bootstrap for the iLAND Workbench QGIS plugin."""
 
 from __future__ import annotations
@@ -43,9 +60,9 @@ class iLandWorkbenchPlugin:
         self._cleanup_stale_ui()
         self._init_locale()
 
-        icon_file = self.plugin_dir / "icon4.png"
+        icon_file = self.plugin_dir / "res" / "icon4.png"
         if not icon_file.exists():
-            icon_file = self.plugin_dir / "icon.svg"
+            icon_file = self.plugin_dir / "res" / "icon.svg"
         icon_path = str(icon_file)
         self.action = QAction(QIcon(icon_path), "iLAND Workbench", self.iface.mainWindow())
         self.action.setObjectName(self.ACTION_OBJECT_NAME)

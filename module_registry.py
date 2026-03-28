@@ -1,3 +1,20 @@
+# /********************************************************************************************
+##
+# iLAND Workbench — QGIS plugin for iLAND‑based ecological modeling
+# Copyright (C) 2026 Sushil Paudel
+#
+# This plugin is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# A full copy of the license can be found in the <a href="LICENSE">LICENSE file</a>.
+#
+# This plugin integrates iLand, an individual‑based forest landscape and disturbance model.
+# Copyright (C) 2009-2026 Werner Rammer, Rupert Seidl
+# For more information on the original iLand model, see https://iland-model.org
+# ********************************************************************************************/
+
 """Module discovery for iLAND source structure."""
 
 from __future__ import annotations
@@ -35,8 +52,21 @@ class ILandModuleRegistry:
 
     def __init__(self, repo_root: Path, max_files_per_bucket: int = 300) -> None:
         self.repo_root = Path(repo_root)
-        self.src_root = self.repo_root / "src"
+        self.src_root = self._resolve_src_root()
         self.max_files_per_bucket = max_files_per_bucket
+
+    def _resolve_src_root(self) -> Path:
+        direct = self.repo_root / "src"
+        if direct.exists() and direct.is_dir():
+            return direct
+
+        # Fallback: find a nested iLAND source root by locating src/iland/mainwindow.ui.
+        for marker in self.repo_root.rglob("src/iland/mainwindow.ui"):
+            src_root = marker.parent.parent
+            if src_root.exists() and src_root.is_dir():
+                return src_root
+
+        return direct
 
     def discover(self) -> List[ModuleInfo]:
         if not self.src_root.exists():

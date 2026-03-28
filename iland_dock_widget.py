@@ -1,3 +1,20 @@
+# /********************************************************************************************
+##
+# iLAND Workbench — QGIS plugin for iLAND‑based ecological modeling
+# Copyright (C) 2026 Sushil Paudel
+#
+# This plugin is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# A full copy of the license can be found in the <a href="LICENSE">LICENSE file</a>.
+#
+# This plugin integrates iLand, an individual‑based forest landscape and disturbance model.
+# Copyright (C) 2009-2026 Werner Rammer, Rupert Seidl
+# For more information on the original iLand model, see https://iland-model.org
+# ********************************************************************************************/
+
 """Dockable iLAND workbench UI that mirrors the desktop app structure."""
 
 # pyright: reportMissingImports=false
@@ -41,6 +58,7 @@ try:
     from PyQt6.QtWidgets import (
         QButtonGroup,
         QCheckBox,
+        QDialog,
         QComboBox,
         QDockWidget,
         QFileDialog,
@@ -64,6 +82,7 @@ try:
         QTreeWidgetItem,
         QVBoxLayout,
         QWidget,
+        QMessageBox,
     )  # type: ignore[import-not-found]
 
 except ImportError:  # pragma: no cover - runtime fallback for QGIS 3.x
@@ -72,6 +91,7 @@ except ImportError:  # pragma: no cover - runtime fallback for QGIS 3.x
     from qgis.PyQt.QtWidgets import (
         QButtonGroup,
         QCheckBox,
+        QDialog,
         QComboBox,
         QDockWidget,
         QFileDialog,
@@ -95,6 +115,7 @@ except ImportError:  # pragma: no cover - runtime fallback for QGIS 3.x
         QTreeWidgetItem,
         QVBoxLayout,
         QWidget,
+        QMessageBox,
     )  # type: ignore[import-not-found]
 
 
@@ -105,11 +126,14 @@ TRANSFORM_SMOOTH = _first_qt_attr(
     Qt,
     ["TransformationMode.SmoothTransformation", "SmoothTransformation"],
 )
+MSGBOX_YES = _resolve_qt_attr(QMessageBox, "StandardButton.Yes") or getattr(QMessageBox, "Yes")
+MSGBOX_NO = _resolve_qt_attr(QMessageBox, "StandardButton.No") or getattr(QMessageBox, "No")
 
 from .config_manager import ILandPluginConfig
 from .iland_ui_catalog import ILandUICatalog
 from .module_registry import ILandModuleRegistry, ModuleInfo, SubmoduleInfo
 from .runtime_manager import ILandRuntimeManager
+from .settings_dialog import ILandSettingsDialog
 
 try:
     from qgis.core import QgsProject, QgsRasterLayer, QgsVectorLayer  # type: ignore[import-not-found]
@@ -136,7 +160,7 @@ class ILandDockWidget(QDockWidget):
     ]
 
     def __init__(self, repo_root: Path, plugin_dir: Path, config: ILandPluginConfig, parent=None, iface=None):
-        super().__init__("iLAND Workbench", parent)
+        super().__init__("", parent)
         self.repo_root = Path(repo_root)
         self.plugin_dir = Path(plugin_dir)
         self.config = config
@@ -147,6 +171,18 @@ class ILandDockWidget(QDockWidget):
 
         self.modules: List[ModuleInfo] = []
         self.settings_tab_map: Dict[str, List[str]] = {}
+        self.settings_tab_layout: Dict[str, List[Dict[str, str]]] = {}
+        self.settings_tab_titles: Dict[str, str] = {}
+        self.settings_tab_descriptions: Dict[str, str] = {}
+        self.settings_field_meta: Dict[str, Dict[str, str]] = {}
+        self.settings_widget_map: Dict[str, Dict[str, object]] = {}
+        self.settings_dirty_keys: Set[str] = set()
+        self.settings_pending_values: Dict[str, str] = {}
+        self.settings_loaded_values: Dict[str, str] = {}
+        self.settings_current_tab_name: str = ""
+        self.settings_current_tab_keys: List[str] = []
+        self._settings_xml_tree: Optional[ET.ElementTree] = None
+        self._settings_xml_path: Optional[Path] = None
         self.selected_module_payload: Optional[Dict[str, object]] = None
         self.latest_release_payload: Optional[Dict[str, object]] = None
         self.visual_mode_buttons: Dict[str, QRadioButton] = {}
@@ -177,6 +213,9 @@ class ILandDockWidget(QDockWidget):
         self._workflow_log_full_backup = ""
         self._last_visual_value_preset = ""
         self._known_species_codes: List[str] = []
+        self._runtime_module_cache_key = ""
+        self._runtime_module_cache: Set[str] = set()
+        self._model_progress_state = "idle"
 
         self.setObjectName("iLANDWorkbenchDock")
         self.setMinimumWidth(520)
@@ -188,23 +227,40 @@ class ILandDockWidget(QDockWidget):
 
         header_row = QHBoxLayout()
         header_row.setSpacing(10)
-        logo = QLabel()
-        logo.setFixedSize(36, 36)
-        logo_path = self.repo_root / "iLAND_QGIS_plugin" / "icon4.png"
-        if logo_path.exists():
-            pixmap = QPixmap(str(logo_path))
-            logo.setPixmap(pixmap.scaled(36, 36, ASPECT_KEEP, TRANSFORM_SMOOTH))
-        header_text = QVBoxLayout()
+        splash = QLabel()
+        splash.setMinimumHeight(96)
+        splash.setMinimumWidth(170)
+        splash_candidates = [
+            self.plugin_dir / "res" / "iland_splash3.jpg",
+        ]
+        for splash_path in splash_candidates:
+            if not splash_path.exists() or not splash_path.is_file():
+                continue
+            pixmap = QPixmap(str(splash_path))
+            if pixmap.isNull():
+                continue
+            splash.setPixmap(pixmap.scaledToHeight(96, TRANSFORM_SMOOTH))
+            break
         title = QLabel("iLAND Workbench")
         title.setObjectName("ilandTitle")
-        subtitle = QLabel("Project input, processing controls, visualization panels, and outputs in one dock.")
-        subtitle.setWordWrap(True)
-        subtitle.setObjectName("ilandSubtitle")
-        header_text.addWidget(title)
-        header_text.addWidget(subtitle)
-        header_row.addWidget(logo)
-        header_row.addLayout(header_text)
-        header_row.addStretch(1)
+        title.setStyleSheet("font-size: 28px; font-weight: 700;")
+        title.setAlignment(
+            _first_qt_attr(Qt, ["AlignmentFlag.AlignLeft", "AlignLeft"])
+            | _first_qt_attr(Qt, ["AlignmentFlag.AlignVCenter", "AlignVCenter"])
+        )
+        title.setMinimumHeight(96)
+        header_row.addWidget(
+            splash,
+            0,
+            _first_qt_attr(Qt, ["AlignmentFlag.AlignLeft", "AlignLeft"])
+            | _first_qt_attr(Qt, ["AlignmentFlag.AlignVCenter", "AlignVCenter"]),
+        )
+        header_row.addWidget(
+            title,
+            1,
+            _first_qt_attr(Qt, ["AlignmentFlag.AlignLeft", "AlignLeft"])
+            | _first_qt_attr(Qt, ["AlignmentFlag.AlignVCenter", "AlignVCenter"]),
+        )
 
         self.status_label = QLabel("Ready")
         self.status_label.setObjectName("summaryLabel")
@@ -241,10 +297,14 @@ class ILandDockWidget(QDockWidget):
     def _build_workflow_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(8, 0, 0, 0)
         layout.setSpacing(8)
 
         form = QFormLayout()
+        form.setLabelAlignment(
+            _first_qt_attr(Qt, ["AlignmentFlag.AlignRight", "AlignRight"])
+            | _first_qt_attr(Qt, ["AlignmentFlag.AlignVCenter", "AlignVCenter"])
+        )
         self.project_file_edit = QLineEdit()
         self.project_file_edit.setPlaceholderText("Path to xml project file...")
         self.project_file_browse_button = QPushButton("...")
@@ -315,10 +375,12 @@ class ILandDockWidget(QDockWidget):
         status_row = QHBoxLayout()
         self.model_status_label = QLabel("Model status: idle")
         self.model_run_progress = QProgressBar()
+        self.model_run_progress.setObjectName("modelRunProgress")
         self.model_run_progress.setTextVisible(False)
         self.model_run_progress.setMinimum(0)
         self.model_run_progress.setMaximum(1)
         self.model_run_progress.setValue(0)
+        self._set_model_progress_state("idle")
         status_row.addWidget(self.model_status_label)
         status_row.addWidget(self.model_run_progress)
 
@@ -361,31 +423,25 @@ class ILandDockWidget(QDockWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
-        splitter = QSplitter(HORIZONTAL)
-        splitter.setChildrenCollapsible(False)
+        action_row = QHBoxLayout()
+        self.settings_dialog_button = QPushButton("Open Settings Dialog")
+        self._set_button_icon(self.settings_dialog_button, "load-settings.png")
+        self.settings_dialog_button.clicked.connect(lambda: self._open_settings_dialog(self.settings_current_tab_name))
+        action_row.addWidget(self.settings_dialog_button)
+        action_row.addStretch(1)
 
-        left = QFrame()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
+        self.settings_summary = QLabel("Use Open Settings Dialog to edit project settings.")
+        self.settings_summary.setWordWrap(True)
+
+        # Keep an internal tree model for metadata mapping, but do not show it in the tab UI.
         self.settings_tree = QTreeWidget()
         self.settings_tree.setHeaderLabels(["iLAND Settings", "Type"])
         self.settings_tree.itemSelectionChanged.connect(self._on_settings_selection)
-        left_layout.addWidget(self.settings_tree)
+        self.settings_tree.hide()
 
-        right = QFrame()
-        right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        self.settings_summary = QLabel("Select a settings group.")
-        self.settings_summary.setWordWrap(True)
-        self.settings_keys_list = QListWidget()
-        right_layout.addWidget(self.settings_summary)
-        right_layout.addWidget(self.settings_keys_list)
-
-        splitter.addWidget(left)
-        splitter.addWidget(right)
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 3)
-        layout.addWidget(splitter)
+        layout.addLayout(action_row)
+        layout.addWidget(self.settings_summary)
+        layout.addStretch(1)
         return widget
 
     def _build_visualization_tab(self) -> QWidget:
@@ -662,6 +718,23 @@ class ILandDockWidget(QDockWidget):
         self.runtime_activate_button = QPushButton("Activate Selected Runtime")
         self.runtime_activate_button.clicked.connect(self._on_activate_runtime)
 
+        self.runtime_compat_refresh_button = QPushButton("Refresh Compatibility Check")
+        self.runtime_compat_refresh_button.clicked.connect(self._refresh_runtime_compatibility_panel)
+        self.runtime_compat_tree = QTreeWidget()
+        self.runtime_compat_tree.setHeaderLabels([
+            "Module",
+            "Source plugins",
+            "Project XML",
+            "Active runtime",
+            "Status",
+        ])
+        self.runtime_compat_tree.setRootIsDecorated(False)
+        self.runtime_compat_tree.setAlternatingRowColors(True)
+        self.runtime_compat_summary = QLabel(
+            "Compatibility check compares source plugins, project XML settings, and active runtime availability."
+        )
+        self.runtime_compat_summary.setWordWrap(True)
+
         layout.addLayout(repo_form)
         layout.addLayout(button_row)
         layout.addWidget(QLabel("Latest Release Assets"))
@@ -669,6 +742,9 @@ class ILandDockWidget(QDockWidget):
         layout.addWidget(QLabel("Installed Runtimes"))
         layout.addWidget(self.runtime_local_list)
         layout.addWidget(self.runtime_activate_button)
+        layout.addWidget(self.runtime_compat_refresh_button)
+        layout.addWidget(self.runtime_compat_tree)
+        layout.addWidget(self.runtime_compat_summary)
         layout.addWidget(self.runtime_status_label)
         return widget
 
@@ -715,6 +791,7 @@ class ILandDockWidget(QDockWidget):
         self._rebuild_settings_tree()
         self._rebuild_module_tree()
         self._refresh_runtime_local_list()
+        self._refresh_runtime_compatibility_panel()
 
         module_count = len(self.modules)
         submodule_count = sum(self._count_submodules(module.submodules) for module in self.modules)
@@ -730,8 +807,12 @@ class ILandDockWidget(QDockWidget):
         self.refresh_modules()
 
     def _rebuild_settings_tree(self):
+        self._load_settings_metadata()
         catalog = self.ui_catalog.discover_settings_catalog()
-        self.settings_tab_map = catalog.tab_settings
+        if self.settings_tab_map:
+            catalog.tab_settings = dict(self.settings_tab_map)
+        else:
+            self.settings_tab_map = catalog.tab_settings
         self.settings_tree.clear()
 
         for category, tabs in catalog.categories.items():
@@ -752,6 +833,500 @@ class ILandDockWidget(QDockWidget):
         self.settings_tree.expandToDepth(1)
         if self.settings_tree.topLevelItemCount() > 0:
             self.settings_tree.setCurrentItem(self.settings_tree.topLevelItem(0))
+
+    def _settings_metadata_file(self) -> Path:
+        candidates = [
+            self.plugin_dir / "res" / "project_file_metadata.txt",
+            self.ui_catalog.metadata_file,
+            self.repo_root / "res" / "project_file_metadata.txt",
+        ]
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        return candidates[0]
+
+    def _normalize_tab_token(self, text: str) -> str:
+        return "".join(ch for ch in text.lower() if ch.isalnum())
+
+    def _tab_name_from_id(self, tab_id: str) -> str:
+        raw = tab_id.strip()
+        if raw.lower().startswith("tab"):
+            raw = raw[3:]
+        if not raw:
+            return tab_id
+        parts: List[str] = []
+        token = raw[0]
+        for ch in raw[1:]:
+            if ch.isupper() and token:
+                parts.append(token)
+                token = ch
+            else:
+                token += ch
+        if token:
+            parts.append(token)
+        pretty = " ".join(part.strip() for part in parts if part.strip())
+        return pretty if pretty else tab_id
+
+    def _canonical_settings_tab_name(self, tab_id: str, tab_label: str) -> str:
+        known_tabs = self.ui_catalog.known_settings_tabs()
+        normalized_known = {self._normalize_tab_token(name): name for name in known_tabs}
+
+        candidates = [tab_label, self._tab_name_from_id(tab_id), tab_id]
+        for candidate in candidates:
+            normalized = self._normalize_tab_token(candidate)
+            if normalized in normalized_known:
+                return normalized_known[normalized]
+        return tab_label or tab_id
+
+    def _parse_metadata_value_parts(self, raw_value: str) -> List[str]:
+        parts = [part.strip() for part in raw_value.split("|")]
+        while len(parts) < 5:
+            parts.append("")
+        return parts
+
+    def _load_settings_metadata(self):
+        metadata_file = self._settings_metadata_file()
+        if not metadata_file.exists():
+            self.settings_tab_map = {}
+            self.settings_tab_layout = {}
+            self.settings_tab_titles = {}
+            self.settings_tab_descriptions = {}
+            self.settings_field_meta = {}
+            return
+
+        tab_map: Dict[str, List[str]] = {}
+        tab_layout: Dict[str, List[Dict[str, str]]] = {}
+        tab_titles: Dict[str, str] = {}
+        tab_descriptions: Dict[str, str] = {}
+        field_meta: Dict[str, Dict[str, str]] = {}
+
+        current_tab = "General"
+
+        for raw_line in metadata_file.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith(";") or "=" not in line:
+                continue
+            key, value = [part.strip() for part in line.split("=", 1)]
+            parts = self._parse_metadata_value_parts(value)
+            input_type = parts[0]
+
+            if key == "gui.layout":
+                if input_type == "tab":
+                    tab_id = parts[1] or "tabUnknown"
+                    tab_label = parts[2] or tab_id
+                    tab_desc = parts[3]
+                    current_tab = self._canonical_settings_tab_name(tab_id, tab_label)
+                    tab_map.setdefault(current_tab, [])
+                    tab_layout.setdefault(current_tab, [])
+                    tab_titles[current_tab] = tab_label
+                    if tab_desc:
+                        tab_descriptions[current_tab] = tab_desc
+                elif input_type in {"group", "layout"}:
+                    tab_layout.setdefault(current_tab, []).append(
+                        {
+                            "kind": input_type,
+                            "label": parts[1],
+                            "description": parts[2],
+                        }
+                    )
+                continue
+
+            if key in field_meta:
+                # Keep first definition for full metadata and treat subsequent references as connected aliases.
+                if input_type == "connected":
+                    tab_layout.setdefault(current_tab, []).append(
+                        {
+                            "kind": "connected",
+                            "key": key,
+                            "label": parts[1],
+                            "description": "",
+                        }
+                    )
+                continue
+
+            field_meta[key] = {
+                "type": input_type,
+                "default": parts[1],
+                "label": parts[2] or key,
+                "tooltip": parts[3],
+                "visibility": parts[4] or "simple",
+            }
+            tab_map.setdefault(current_tab, []).append(key)
+            tab_layout.setdefault(current_tab, []).append(
+                {
+                    "kind": "field",
+                    "key": key,
+                }
+            )
+
+        self.settings_tab_map = tab_map
+        self.settings_tab_layout = tab_layout
+        self.settings_tab_titles = tab_titles
+        self.settings_tab_descriptions = tab_descriptions
+        self.settings_field_meta = field_meta
+
+    def _ensure_settings_xml_loaded(self, force_reload: bool = False, silent: bool = False) -> bool:
+        xml_path_raw = self.project_file_edit.text().strip()
+        if not xml_path_raw:
+            if not silent:
+                self.status_label.setText("Select Project XML in Workflow tab before editing settings.")
+            self._settings_xml_tree = None
+            self._settings_xml_path = None
+            return False
+
+        xml_path = Path(xml_path_raw)
+        if not xml_path.exists() or not xml_path.is_file():
+            if not silent:
+                self.status_label.setText(f"Settings XML not found: {xml_path}")
+            self._settings_xml_tree = None
+            self._settings_xml_path = None
+            return False
+
+        if (
+            not force_reload
+            and self._settings_xml_tree is not None
+            and self._settings_xml_path is not None
+            and self._settings_xml_path.resolve() == xml_path.resolve()
+        ):
+            return True
+
+        try:
+            self._settings_xml_tree = ET.parse(xml_path)
+            self._settings_xml_path = xml_path
+            self.settings_loaded_values = {}
+            self.settings_pending_values = {}
+            self.settings_dirty_keys.clear()
+
+            root = self._settings_xml_tree.getroot()
+            for key in self.settings_field_meta.keys():
+                node = self._ensure_xml_node(root, key)
+                self.settings_loaded_values[key] = (node.text or "").strip()
+
+            self._update_settings_dirty_state()
+            self.status_label.setText(f"Loaded settings from: {xml_path.name}")
+            return True
+        except Exception as exc:
+            self._settings_xml_tree = None
+            self._settings_xml_path = None
+            if not silent:
+                self.status_label.setText(f"Could not load settings XML: {exc}")
+            return False
+
+    def _ensure_xml_node(self, root: ET.Element, key: str) -> ET.Element:
+        node = root
+        for part in [part for part in key.split(".") if part]:
+            child = node.find(part)
+            if child is None:
+                child = ET.SubElement(node, part)
+                child.text = ""
+            node = child
+        return node
+
+    def _clear_settings_editor_layout(self):
+        while self.settings_editor_layout.count():
+            item = self.settings_editor_layout.takeAt(0)
+            widget = item.widget()
+            child_layout = item.layout()
+            if widget is not None:
+                widget.deleteLater()
+            elif child_layout is not None:
+                while child_layout.count():
+                    child_item = child_layout.takeAt(0)
+                    child_widget = child_item.widget()
+                    if child_widget is not None:
+                        child_widget.deleteLater()
+
+    def _on_settings_load_xml(self):
+        if self.settings_pending_values and self.settings_dirty_keys:
+            choice = QMessageBox.question(
+                self,
+                "Discard unsaved changes?",
+                "Reloading XML will discard pending settings changes. Continue?",
+                MSGBOX_YES | MSGBOX_NO,
+            )
+            if choice != MSGBOX_YES:
+                return
+
+        if self._ensure_settings_xml_loaded(force_reload=True):
+            if self.settings_current_tab_name:
+                self._render_settings_tab(self.settings_current_tab_name)
+            self._update_settings_dirty_state()
+
+    def _on_settings_save_changes(self):
+        if not self.settings_pending_values:
+            self.status_label.setText("No settings changes to save.")
+            return
+        if not self._ensure_settings_xml_loaded(silent=False):
+            return
+        if self._settings_xml_tree is None or self._settings_xml_path is None:
+            self.status_label.setText("Settings XML is not loaded.")
+            return
+
+        try:
+            root = self._settings_xml_tree.getroot()
+            for key, value in self.settings_pending_values.items():
+                node = self._ensure_xml_node(root, key)
+                node.text = value
+                self.settings_loaded_values[key] = value
+
+            self._settings_xml_tree.write(self._settings_xml_path, encoding="utf-8", xml_declaration=True)
+            changed_count = len(self.settings_pending_values)
+            self.settings_pending_values.clear()
+            self.settings_dirty_keys.clear()
+            self._update_settings_dirty_state()
+            self.status_label.setText(f"Saved {changed_count} settings to {self._settings_xml_path.name}.")
+        except Exception as exc:
+            self.status_label.setText(f"Could not save settings XML: {exc}")
+
+    def _on_settings_revert_tab(self):
+        if not self.settings_current_tab_name:
+            return
+        for key in self.settings_current_tab_keys:
+            self.settings_pending_values.pop(key, None)
+            self.settings_dirty_keys.discard(key)
+        self._render_settings_tab(self.settings_current_tab_name)
+        self._update_settings_dirty_state()
+        self.status_label.setText(f"Reverted pending changes for '{self.settings_current_tab_name}'.")
+
+    def _on_settings_update_xml(self):
+        if not self._ensure_settings_xml_loaded(silent=False):
+            return
+        if self._settings_xml_tree is None or self._settings_xml_path is None:
+            return
+
+        root = self._settings_xml_tree.getroot()
+        created = 0
+        for key in self.settings_field_meta.keys():
+            had_value = root.find("./" + "/".join(key.split("."))) is not None
+            self._ensure_xml_node(root, key)
+            if not had_value:
+                created += 1
+
+        try:
+            self._settings_xml_tree.write(self._settings_xml_path, encoding="utf-8", xml_declaration=True)
+            self.status_label.setText(
+                f"Update XML complete: {created} missing keys added to {self._settings_xml_path.name}."
+            )
+            self._append_misc_log(
+                f"Update XML from Settings tab: added {created} missing keys to {self._settings_xml_path.name}."
+            )
+        except Exception as exc:
+            self.status_label.setText(f"Could not write updated XML: {exc}")
+
+    def _format_settings_value_for_widget(self, key: str, value: str) -> str:
+        meta = self.settings_field_meta.get(key, {})
+        input_type = str(meta.get("type", "string")).lower()
+        if input_type == "boolean":
+            return "true" if value.strip().lower() in {"1", "true", "yes"} else "false"
+        return value
+
+    def _set_widget_value(self, widget_info: Dict[str, object], value: str):
+        control = widget_info.get("control")
+        widget_type = str(widget_info.get("type", "string")).lower()
+
+        if isinstance(control, QCheckBox):
+            control.setChecked(value.strip().lower() in {"1", "true", "yes"})
+            return
+
+        if isinstance(control, QComboBox):
+            idx = control.findText(value)
+            if idx < 0 and value:
+                control.addItem(value)
+                idx = control.findText(value)
+            if idx >= 0:
+                control.setCurrentIndex(idx)
+            return
+
+        if isinstance(control, QLineEdit):
+            if widget_type in {"file", "directory", "path"}:
+                control.setText(value)
+            else:
+                control.setText(value)
+
+    def _get_widget_value(self, widget_info: Dict[str, object]) -> str:
+        control = widget_info.get("control")
+        if isinstance(control, QCheckBox):
+            return "true" if control.isChecked() else "false"
+        if isinstance(control, QComboBox):
+            return control.currentText().strip()
+        if isinstance(control, QLineEdit):
+            return control.text().strip()
+        return ""
+
+    def _update_settings_dirty_state(self):
+        dirty_count = len(self.settings_dirty_keys)
+        if hasattr(self, "settings_dirty_label"):
+            if dirty_count:
+                self.settings_dirty_label.setText(f"Pending changes: {dirty_count}")
+            else:
+                self.settings_dirty_label.setText("No pending changes.")
+        if hasattr(self, "settings_save_button"):
+            self.settings_save_button.setEnabled(dirty_count > 0)
+        if hasattr(self, "settings_revert_button"):
+            self.settings_revert_button.setEnabled(bool(self.settings_current_tab_name))
+
+    def _on_setting_widget_changed(self, key: str):
+        widget_info = self.settings_widget_map.get(key)
+        if not widget_info:
+            return
+        new_value = self._get_widget_value(widget_info)
+        base_value = self.settings_loaded_values.get(key, "")
+        if new_value == base_value:
+            self.settings_pending_values.pop(key, None)
+            self.settings_dirty_keys.discard(key)
+        else:
+            self.settings_pending_values[key] = new_value
+            self.settings_dirty_keys.add(key)
+        self._update_settings_dirty_state()
+
+    def _create_settings_widget(self, key: str, field_meta: Dict[str, str]) -> Dict[str, object]:
+        input_type = field_meta.get("type", "string").lower()
+        tooltip = field_meta.get("tooltip", "")
+
+        if input_type == "boolean":
+            control = QCheckBox()
+            control.stateChanged.connect(lambda _state, k=key: self._on_setting_widget_changed(k))
+            control.setToolTip(tooltip)
+            return {"type": input_type, "control": control}
+
+        if input_type == "combo":
+            control = QComboBox()
+            for option in [part.strip() for part in field_meta.get("default", "").split(";") if part.strip()]:
+                control.addItem(option)
+            control.currentTextChanged.connect(lambda _value, k=key: self._on_setting_widget_changed(k))
+            control.setToolTip(tooltip)
+            return {"type": input_type, "control": control}
+
+        if input_type in {"file", "directory", "path"}:
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(4)
+
+            line_edit = QLineEdit()
+            line_edit.textChanged.connect(lambda _text, k=key: self._on_setting_widget_changed(k))
+            line_edit.setToolTip(tooltip)
+            browse_button = QPushButton("...")
+            browse_button.setFixedWidth(28)
+            browse_button.clicked.connect(lambda _checked=False, k=key, t=input_type: self._browse_settings_path(k, t))
+
+            row_layout.addWidget(line_edit)
+            row_layout.addWidget(browse_button)
+            return {"type": input_type, "control": line_edit, "container": row_widget}
+
+        line_edit = QLineEdit()
+        line_edit.textChanged.connect(lambda _text, k=key: self._on_setting_widget_changed(k))
+        line_edit.setToolTip(tooltip)
+        return {"type": input_type, "control": line_edit}
+
+    def _browse_settings_path(self, key: str, input_type: str):
+        widget_info = self.settings_widget_map.get(key)
+        if not widget_info:
+            return
+        control = widget_info.get("control")
+        if not isinstance(control, QLineEdit):
+            return
+
+        start_dir = control.text().strip() or str(self.repo_root)
+        if input_type == "directory":
+            selected = QFileDialog.getExistingDirectory(self, "Select directory", start_dir)
+            if selected:
+                control.setText(selected)
+            return
+
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select file",
+            start_dir,
+            "All files (*)",
+        )
+        if selected:
+            control.setText(selected)
+
+    def _render_settings_tab(self, tab_name: str):
+        self.settings_current_tab_name = tab_name
+        self.settings_widget_map = {}
+        self.settings_current_tab_keys = []
+        self._clear_settings_editor_layout()
+
+        layout_spec = self.settings_tab_layout.get(tab_name, [])
+        self.settings_tab_description.setText(self.settings_tab_descriptions.get(tab_name, ""))
+
+        if not layout_spec:
+            self.settings_editor_layout.addWidget(QLabel("No settings mapped for this tab."))
+            self.settings_editor_layout.addStretch(1)
+            self._update_settings_dirty_state()
+            return
+
+        if not self._ensure_settings_xml_loaded(silent=True):
+            self.settings_editor_layout.addWidget(QLabel("Load/select a Project XML to edit settings values."))
+            self.settings_editor_layout.addStretch(1)
+            self._update_settings_dirty_state()
+            return
+
+        active_form_widget = QWidget()
+        active_form_layout = QFormLayout(active_form_widget)
+        active_form_layout.setContentsMargins(0, 0, 0, 0)
+        active_form_layout.setSpacing(4)
+        self.settings_editor_layout.addWidget(active_form_widget)
+
+        seen_keys: Set[str] = set()
+        for item in layout_spec:
+            kind = item.get("kind", "")
+
+            if kind == "layout" and item.get("label", "") == "hl":
+                line = QFrame()
+                line.setFrameShape(QFrame.Shape.HLine)
+                line.setFrameShadow(QFrame.Shadow.Sunken)
+                self.settings_editor_layout.addWidget(line)
+                continue
+
+            if kind == "group":
+                group_label = item.get("label", "").strip()
+                if group_label:
+                    heading = QLabel(group_label)
+                    heading.setStyleSheet("font-weight: 700;")
+                    self.settings_editor_layout.addWidget(heading)
+                group_desc = item.get("description", "").strip()
+                if group_desc:
+                    desc = QLabel(group_desc)
+                    desc.setWordWrap(True)
+                    self.settings_editor_layout.addWidget(desc)
+                group_widget = QWidget()
+                active_form_layout = QFormLayout(group_widget)
+                active_form_layout.setContentsMargins(0, 0, 0, 0)
+                active_form_layout.setSpacing(4)
+                self.settings_editor_layout.addWidget(group_widget)
+                continue
+
+            if kind not in {"field", "connected"}:
+                continue
+
+            key = item.get("key", "")
+            if not key or key in seen_keys:
+                continue
+            field_meta = self.settings_field_meta.get(key)
+            if not field_meta:
+                continue
+            seen_keys.add(key)
+
+            widget_info = self._create_settings_widget(key, field_meta)
+            self.settings_widget_map[key] = widget_info
+            self.settings_current_tab_keys.append(key)
+
+            label_text = item.get("label", "").strip() or field_meta.get("label", key)
+            label_widget = QLabel(label_text)
+            label_widget.setToolTip(field_meta.get("tooltip", ""))
+            container_widget = widget_info.get("container", widget_info.get("control"))
+            if isinstance(container_widget, QWidget):
+                active_form_layout.addRow(label_widget, container_widget)
+
+            value = self.settings_pending_values.get(key, self.settings_loaded_values.get(key, ""))
+            value = self._format_settings_value_for_widget(key, value)
+            self._set_widget_value(widget_info, value)
+
+        self.settings_editor_layout.addStretch(1)
+        self._update_settings_dirty_state()
 
     def _rebuild_module_tree(self):
         self.module_tree.clear()
@@ -848,17 +1423,52 @@ class ILandDockWidget(QDockWidget):
 
         kind = payload.get("kind")
         name = payload.get("name")
-        self.settings_keys_list.clear()
 
         if kind == "category":
-            self.settings_summary.setText(f"{name}: select a tab to see mapped settings.")
+            self.settings_summary.setText(f"{name}: select a tab to open the Settings dialog.")
+            self.settings_current_tab_name = ""
             return
 
         if kind == "tab":
             keys = self.settings_tab_map.get(name, [])
             self.settings_summary.setText(f"{name}: {len(keys)} settings mapped from project_file_metadata.txt")
-            for key in keys:
-                self.settings_keys_list.addItem(QListWidgetItem(key))
+            self.settings_current_tab_name = str(name)
+            self._open_settings_dialog(str(name))
+
+    def _open_settings_dialog(self, initial_tab: str = ""):
+        self._load_settings_metadata()
+        catalog = self.ui_catalog.discover_settings_catalog()
+        dialog = ILandSettingsDialog(
+            self.repo_root,
+            self.plugin_dir,
+            self.project_file_edit.text().strip(),
+            dict(catalog.categories),
+            dict(self.settings_tab_map),
+            dict(self.settings_tab_layout),
+            dict(self.settings_tab_titles),
+            dict(self.settings_tab_descriptions),
+            dict(self.settings_field_meta),
+            initial_tab,
+            self,
+        )
+
+        if hasattr(dialog, "exec"):
+            result = dialog.exec()
+        else:
+            result = dialog.exec_()
+        accepted = _resolve_qt_attr(QDialog, "DialogCode.Accepted") or getattr(QDialog, "Accepted", 1)
+        if result != accepted:
+            return
+
+        new_file = str(dialog.current_project_file).strip()
+        if new_file and new_file != self.project_file_edit.text().strip():
+            self.project_file_edit.setText(new_file)
+            self._refresh_species_controls()
+            self._refresh_runtime_compatibility_panel()
+            self._update_run_controls_state()
+
+        self._ensure_settings_xml_loaded(force_reload=True, silent=True)
+        self.status_label.setText("Settings dialog changes applied.")
 
     def _browse_project_xml(self):
         start_dir = str(self.repo_root)
@@ -874,6 +1484,7 @@ class ILandDockWidget(QDockWidget):
         if file_path:
             self.project_file_edit.setText(file_path)
             self._refresh_species_controls()
+            self._refresh_runtime_compatibility_panel()
             self._update_run_controls_state()
 
     def _browse_output_dir(self):
@@ -883,14 +1494,9 @@ class ILandDockWidget(QDockWidget):
             self.output_dir_edit.setText(folder)
 
     def _set_button_icon(self, button: QPushButton, icon_name: str):
-        candidates = [
-            self.plugin_dir / "icons" / icon_name,
-            self.repo_root / "src" / "iland" / "res" / icon_name,
-        ]
-        for candidate in candidates:
-            if candidate.exists() and candidate.is_file():
-                button.setIcon(QIcon(str(candidate)))
-                break
+        icon_path = self.plugin_dir / "res" / icon_name
+        if icon_path.exists() and icon_path.is_file():
+            button.setIcon(QIcon(str(icon_path)))
 
     def _is_model_running(self) -> bool:
         if self._session_run_thread is not None and self._session_run_thread.is_alive():
@@ -951,20 +1557,27 @@ class ILandDockWidget(QDockWidget):
 
         return {"status": "ERR", "msg": "session_timeout"}
 
+    def _normalized_executable_path(self, executable: Path | str) -> str:
+        try:
+            resolved = Path(executable).resolve()
+        except Exception:
+            resolved = Path(str(executable))
+        return str(resolved).replace("\\", "/").lower()
+
     def _classify_session_startup_failure(self, ready: Dict[str, str], executable: Path) -> str:
         msg = str(ready.get("msg", "")).lower()
         boot = str(ready.get("boot", "")).lower()
 
         if "invalid number of years to run" in boot:
             return (
-                "Selected iLANDc runtime does not support --session mode (legacy console signature detected). "
-                "Activate a newer runtime/executable built from this repository's session-capable sources. "
+                "Selected iLANDc runtime uses legacy CLI signature and does not support --session mode. "
+                "Workbench will use compatibility one-shot mode for create/run commands. "
                 f"Current executable: {executable}"
             )
         if "usage:" in boot and "ilandc.exe <xml-project-file> <years>" in boot:
             return (
-                "Selected iLANDc runtime appears to be legacy CLI-only and does not support persistent session mode. "
-                "Please activate updated iLANDc.exe."
+                "Selected iLANDc runtime is legacy CLI-only and does not support persistent session mode. "
+                "Workbench will use compatibility one-shot mode."
             )
         if msg == "session_closed":
             return (
@@ -1022,11 +1635,13 @@ class ILandDockWidget(QDockWidget):
         if executable is None:
             return False
 
-        executable_str = str(executable)
-        if self._legacy_cli_executable and self._legacy_cli_executable != executable_str:
+        executable_key = self._normalized_executable_path(executable)
+        if self._legacy_cli_executable and self._legacy_cli_executable != executable_key:
             self._legacy_cli_executable = ""
-        if self._legacy_cli_executable == executable_str:
-            self.status_label.setText("Legacy iLANDc detected. Using compatibility run mode.")
+        if self._legacy_cli_executable == executable_key:
+            self.model_status_label.setText("Model status: compatibility mode (legacy CLI)")
+            self._set_model_progress_state("idle")
+            self.status_label.setText("Legacy iLANDc detected. Using compatibility one-shot mode.")
             return False
 
         output_dir = self.output_dir_edit.text().strip()
@@ -1058,15 +1673,21 @@ class ILandDockWidget(QDockWidget):
             if ready.get("status") != "OK":
                 is_legacy = self._is_legacy_session_startup_failure(ready)
                 if is_legacy:
-                    self._legacy_cli_executable = executable_str
+                    self._legacy_cli_executable = executable_key
                     self._append_workflow_log(
                         "Runtime does not support --session mode; switching to compatibility one-shot CLI mode."
                     )
+                    self._stop_session()
+                    self.status_label.setText(self._classify_session_startup_failure(ready, executable))
+                    self.model_status_label.setText("Model status: compatibility mode (legacy CLI)")
+                    self._set_model_progress_state("idle")
+                    return False
                 else:
                     self._append_workflow_log(f"Session startup failed: {ready}")
                 self._stop_session()
                 self.status_label.setText(self._classify_session_startup_failure(ready, executable))
                 self.model_status_label.setText("Model status: session start failed")
+                self._set_model_progress_state("failed")
                 return False
 
             self._append_workflow_log("Started persistent iLAND session backend.")
@@ -1080,6 +1701,7 @@ class ILandDockWidget(QDockWidget):
             self._stop_session()
             self.status_label.setText(f"Could not start session backend: {exc}")
             self.model_status_label.setText("Model status: session start failed")
+            self._set_model_progress_state("failed")
             self._append_workflow_log(f"Session start failed: {exc}")
             return False
 
@@ -1110,6 +1732,22 @@ class ILandDockWidget(QDockWidget):
         if hasattr(self, "current_year_label"):
             self.current_year_label.setText(str(self._current_year))
 
+    def _set_model_progress_state(self, state: str):
+        if not hasattr(self, "model_run_progress"):
+            return
+
+        normalized = state if state in {"idle", "running", "paused", "success", "failed"} else "idle"
+        if normalized == self._model_progress_state:
+            return
+
+        self._model_progress_state = normalized
+        self.model_run_progress.setProperty("runState", normalized)
+        style = self.model_run_progress.style()
+        if style is not None:
+            style.unpolish(self.model_run_progress)
+            style.polish(self.model_run_progress)
+        self.model_run_progress.update()
+
     def _run_one_year(self):
         if self._is_model_running():
             self.status_label.setText("A model run is already in progress.")
@@ -1139,6 +1777,7 @@ class ILandDockWidget(QDockWidget):
         if reply.get("status") != "OK":
             self.status_label.setText(f"Run one year failed: {reply.get('msg', 'unknown error')}")
             self.model_status_label.setText("Model status: run failed")
+            self._set_model_progress_state("failed")
             self._append_workflow_log(f"RUN_ONE_YEAR failed: {reply}")
             self._update_run_controls_state()
             return
@@ -1147,6 +1786,7 @@ class ILandDockWidget(QDockWidget):
         self._set_current_year_display(year_value)
         self._runtime_reported_year = year_value
         self.model_status_label.setText("Model status: completed one year")
+        self._set_model_progress_state("success")
         self.status_label.setText(f"Model advanced to year {year_value}.")
         self._append_workflow_log(f"RUN_ONE_YEAR completed. Current year: {year_value}")
         self._autoload_project_data_on_success()
@@ -1158,9 +1798,11 @@ class ILandDockWidget(QDockWidget):
             self._model_paused = not self._model_paused
             if self._model_paused:
                 self.model_status_label.setText("Model status: paused")
+                self._set_model_progress_state("paused")
                 self._append_workflow_log("Pause requested. Execution will continue after current yearly step.")
             else:
                 self.model_status_label.setText("Model status: running")
+                self._set_model_progress_state("running")
                 self._append_workflow_log("Continue requested.")
             self._update_run_controls_state()
             return
@@ -1187,6 +1829,7 @@ class ILandDockWidget(QDockWidget):
                     os.kill(pid, sigstop)
                 self._model_paused = True
                 self.model_status_label.setText("Model status: paused")
+                self._set_model_progress_state("paused")
                 self._append_workflow_log(f"Model process paused (PID {pid}).")
             else:
                 if os.name == "nt":
@@ -1203,9 +1846,11 @@ class ILandDockWidget(QDockWidget):
                     os.kill(pid, sigcont)
                 self._model_paused = False
                 self.model_status_label.setText("Model status: running")
+                self._set_model_progress_state("running")
                 self._append_workflow_log(f"Model process resumed (PID {pid}).")
         except Exception as exc:
             self.status_label.setText(f"Pause/Continue failed: {exc}")
+            self._set_model_progress_state("failed")
             self._append_workflow_log(f"Pause/Continue operation failed for PID {pid}: {exc}")
 
         self._update_run_controls_state()
@@ -1215,6 +1860,7 @@ class ILandDockWidget(QDockWidget):
             self._session_stop_requested = True
             self.status_label.setText("Stop requested. Waiting for current year step to finish...")
             self.model_status_label.setText("Model status: stopping...")
+            self._set_model_progress_state("running")
             self._append_workflow_log("Stop requested for session run loop.")
             self._update_run_controls_state()
             return
@@ -1245,6 +1891,7 @@ class ILandDockWidget(QDockWidget):
         self.model_run_progress.setMaximum(1)
         self.model_run_progress.setValue(0)
         self.model_status_label.setText("Model status: stopped")
+        self._set_model_progress_state("idle")
         self.status_label.setText("Model stopped.")
         self._append_workflow_log(f"Model process stopped (PID {pid}).")
         self._update_run_controls_state()
@@ -1278,6 +1925,7 @@ class ILandDockWidget(QDockWidget):
         self.model_run_progress.setMaximum(1)
         self.model_run_progress.setValue(0)
         self.model_status_label.setText("Model status: destroyed/reset")
+        self._set_model_progress_state("idle")
         self.status_label.setText("Model state destroyed/reset.")
         self._clear_managed_mode_layers()
         self._set_current_year_display(0)
@@ -1313,6 +1961,7 @@ class ILandDockWidget(QDockWidget):
 
         if executable is None:
             self.model_status_label.setText("Model status: missing executable")
+            self._set_model_progress_state("failed")
             self.status_label.setText("iLANDc runtime not found. Check Runtime tab to install/activate one.")
             self._append_workflow_log("Run blocked: executable not found after runtime auto-install attempt.")
             return None
@@ -1320,6 +1969,7 @@ class ILandDockWidget(QDockWidget):
         executable_str = str(executable)
         if "ilandc" not in Path(executable_str).name.lower():
             self.model_status_label.setText("Model status: invalid executable")
+            self._set_model_progress_state("failed")
             self.status_label.setText("Selected executable is not iLANDc.exe. Headless console engine is required.")
             self._append_workflow_log(
                 f"Run blocked: '{executable_str}' appears to be GUI app. Please select iLANDc.exe."
@@ -1380,6 +2030,7 @@ class ILandDockWidget(QDockWidget):
                 self.model_status_label.setText("Model status: creating...")
             else:
                 self.model_status_label.setText("Model status: creating/running...")
+            self._set_model_progress_state("running")
             self.model_run_progress.setMinimum(0)
             self.model_run_progress.setMaximum(0)
             project_dir = str(Path(project_file).resolve().parent)
@@ -1430,6 +2081,7 @@ class ILandDockWidget(QDockWidget):
             self._update_run_controls_state()
         except Exception as exc:
             self.model_status_label.setText("Model status: failed to start")
+            self._set_model_progress_state("failed")
             self.model_run_progress.setMinimum(0)
             self.model_run_progress.setMaximum(1)
             self.model_run_progress.setValue(0)
@@ -1494,9 +2146,11 @@ class ILandDockWidget(QDockWidget):
             return
 
         self.model_status_label.setText("Model status: creating...")
+        self._set_model_progress_state("running")
         reply = self._session_command("CREATE", timeout_seconds=3600)
         if reply.get("status") != "OK":
             self.model_status_label.setText("Model status: create failed")
+            self._set_model_progress_state("failed")
             self.status_label.setText(f"Create Model failed: {reply.get('msg', 'unknown error')}")
             self._append_workflow_log(f"CREATE failed: {reply}")
             self._model_created = False
@@ -1508,6 +2162,7 @@ class ILandDockWidget(QDockWidget):
         self._set_current_year_display(max(1, year_value))
         self._runtime_reported_year = self._current_year
         self.model_status_label.setText("Model status: created")
+        self._set_model_progress_state("success")
         self.status_label.setText("Model created. Ready to run.")
         self._append_workflow_log("Create Model completed successfully using persistent session backend.")
         self._update_run_controls_state()
@@ -1731,6 +2386,7 @@ class ILandDockWidget(QDockWidget):
             self.runtime_local_list.addItem(item)
         if not self.runtime_manager.list_runtimes():
             self.runtime_status_label.setText("No local runtimes installed yet.")
+        self._refresh_runtime_compatibility_panel()
 
     def _on_activate_runtime(self):
         selected = self.runtime_local_list.selectedItems()
@@ -1747,6 +2403,187 @@ class ILandDockWidget(QDockWidget):
             self.runtime_status_label.setText(f"Activated runtime: {tag}")
         else:
             self.runtime_status_label.setText(f"Could not activate runtime: {tag}")
+
+    def _normalize_module_key(self, raw_name: str) -> str:
+        return "".join(ch for ch in raw_name.lower() if ch.isalnum())
+
+    def _module_display_name(self, module_key: str, source_display_names: Dict[str, str]) -> str:
+        if module_key in source_display_names:
+            return source_display_names[module_key]
+        if module_key == "barkbeetle":
+            return "BarkBeetle"
+        return module_key[:1].upper() + module_key[1:] if module_key else "Unknown"
+
+    def _is_truthy_text(self, raw_text: str) -> bool:
+        return raw_text.strip().lower() in {"1", "true", "yes", "on"}
+
+    def _enabled_modules_from_project_xml(self) -> Set[str]:
+        project_path_raw = self.project_file_edit.text().strip()
+        if not project_path_raw:
+            return set()
+
+        xml_path = Path(project_path_raw)
+        if not xml_path.exists() or not xml_path.is_file():
+            return set()
+
+        try:
+            root = ET.parse(xml_path).getroot()
+        except Exception:
+            return set()
+
+        enabled_modules: Set[str] = set()
+        parent_map = {child: parent for parent in root.iter() for child in parent}
+
+        for node in root.iter():
+            tag = str(node.tag)
+            value = (node.text or "").strip()
+            if not value or not self._is_truthy_text(value):
+                continue
+
+            lower_tag = tag.lower()
+            if lower_tag.startswith("modules.") and lower_tag.endswith(".enabled"):
+                module_name = tag[len("modules.") : -len(".enabled")]
+                module_key = self._normalize_module_key(module_name)
+                if module_key:
+                    enabled_modules.add(module_key)
+                continue
+
+            if lower_tag == "enabled":
+                parent = parent_map.get(node)
+                if parent is None:
+                    continue
+                grand_parent = parent_map.get(parent)
+                if grand_parent is None:
+                    continue
+                if str(grand_parent.tag).lower() != "modules":
+                    continue
+
+                module_key = self._normalize_module_key(str(parent.tag))
+                if module_key:
+                    enabled_modules.add(module_key)
+
+        return enabled_modules
+
+    def _detect_runtime_modules(self, executable: Path, expected_modules: Set[str]) -> Set[str]:
+        cache_token = ""
+        try:
+            stat = executable.stat()
+            cache_token = f"{executable.resolve()}|{stat.st_mtime_ns}|{stat.st_size}"
+        except Exception:
+            cache_token = str(executable)
+
+        if cache_token and cache_token == self._runtime_module_cache_key:
+            return set(self._runtime_module_cache)
+
+        detected: Set[str] = set()
+        candidate_modules = set(expected_modules)
+        candidate_modules.update({"fire", "wind", "barkbeetle", "bite"})
+
+        try:
+            binary_data = executable.read_bytes()
+            for match in re.findall(rb"modules\.([a-z0-9_]+)\.enabled", binary_data, flags=re.IGNORECASE):
+                module_key = self._normalize_module_key(match.decode("ascii", "ignore"))
+                if module_key:
+                    detected.add(module_key)
+        except Exception:
+            pass
+
+        try:
+            for artifact in executable.parent.iterdir():
+                if not artifact.is_file():
+                    continue
+                if artifact.suffix.lower() not in {".dll", ".so", ".dylib", ".exe", ".lib", ".a"}:
+                    continue
+                artifact_name = artifact.name.lower()
+                for module_key in candidate_modules:
+                    if module_key and module_key in artifact_name:
+                        detected.add(module_key)
+        except Exception:
+            pass
+
+        self._runtime_module_cache_key = cache_token
+        self._runtime_module_cache = set(detected)
+        return detected
+
+    def _refresh_runtime_compatibility_panel(self):
+        if not hasattr(self, "runtime_compat_tree"):
+            return
+
+        source_display_names: Dict[str, str] = {}
+        source_modules: Set[str] = set()
+        for raw_name in self.ui_catalog.discover_disturbance_modules():
+            module_key = self._normalize_module_key(raw_name)
+            if not module_key:
+                continue
+            source_modules.add(module_key)
+            source_display_names.setdefault(module_key, raw_name)
+
+        xml_enabled_modules = self._enabled_modules_from_project_xml()
+
+        runtime_executable = self.runtime_manager.get_active_executable()
+        runtime_modules: Set[str] = set()
+        if runtime_executable is not None and runtime_executable.exists() and runtime_executable.is_file():
+            runtime_modules = self._detect_runtime_modules(
+                runtime_executable,
+                source_modules.union(xml_enabled_modules),
+            )
+
+        all_modules = sorted(source_modules.union(xml_enabled_modules).union(runtime_modules))
+
+        self.runtime_compat_tree.clear()
+        if not all_modules:
+            self.runtime_compat_tree.addTopLevelItem(
+                QTreeWidgetItem([
+                    "(no modules detected)",
+                    "No",
+                    "No",
+                    "No active runtime" if runtime_executable is None else "No",
+                    "Select a project XML and activate a runtime to compare modules",
+                ])
+            )
+
+        for module_key in all_modules:
+            in_source = module_key in source_modules
+            in_xml = module_key in xml_enabled_modules
+            in_runtime = module_key in runtime_modules
+
+            if runtime_executable is None:
+                runtime_state = "No active runtime"
+            else:
+                runtime_state = "Yes" if in_runtime else "No"
+
+            if in_xml and runtime_executable is not None and not in_runtime:
+                status = "Enabled in XML but not detected in runtime"
+            elif in_xml and runtime_executable is None:
+                status = "Enabled in XML (activate a runtime to verify)"
+            elif in_runtime and not in_source:
+                status = "Runtime-only module"
+            elif in_source and not in_xml:
+                status = "Available in source, not enabled in XML"
+            else:
+                status = "Aligned"
+
+            item = QTreeWidgetItem(
+                [
+                    self._module_display_name(module_key, source_display_names),
+                    "Yes" if in_source else "No",
+                    "Yes" if in_xml else "No",
+                    runtime_state,
+                    status,
+                ]
+            )
+            self.runtime_compat_tree.addTopLevelItem(item)
+
+        runtime_name = runtime_executable.name if runtime_executable is not None else "none"
+        summary = (
+            f"Source plugins: {len(source_modules)} | "
+            f"XML enabled: {len(xml_enabled_modules)} | "
+            f"Runtime detected: {len(runtime_modules)} | "
+            f"Active runtime: {runtime_name}"
+        )
+        if runtime_executable is not None and not runtime_modules:
+            summary += " (module detection may be limited for this runtime build)."
+        self.runtime_compat_summary.setText(summary)
 
     def _on_select_all_debug_data(self):
         all_selected = all(box.isChecked() for box in self.debug_action_boxes.values())
@@ -1871,7 +2708,7 @@ class ILandDockWidget(QDockWidget):
             ("Repo root exists", self.repo_root.exists()),
             ("src folder exists", (self.repo_root / "src").exists()),
             ("mainwindow.ui exists", (self.repo_root / "src" / "iland" / "mainwindow.ui").exists()),
-            ("Metadata exists", (self.repo_root / "src" / "iland" / "res" / "project_file_metadata.txt").exists()),
+            ("Metadata exists", self._settings_metadata_file().exists()),
         ]
         passed = [name for name, ok in checks if ok]
         failed = [name for name, ok in checks if not ok]
@@ -1901,48 +2738,34 @@ class ILandDockWidget(QDockWidget):
         self._append_misc_log(f"Expression plotter evaluated '{expr}'. Result CSV copied to clipboard.")
 
     def _on_misc_update_xml(self):
-        xml_path_raw = self.project_file_edit.text().strip()
-        if not xml_path_raw:
-            self._append_misc_log("Update XML file skipped: no project XML path provided.")
+        if not self._ensure_settings_xml_loaded(force_reload=True, silent=True):
+            self._append_misc_log("Update XML file skipped: no valid project XML path provided.")
             return
-        xml_path = Path(xml_path_raw)
-        if not xml_path.exists():
-            self._append_misc_log(f"Update XML file skipped: {xml_path} not found.")
+        if self._settings_xml_tree is None or self._settings_xml_path is None:
+            self._append_misc_log("Update XML file skipped: XML tree is not available.")
             return
 
-        metadata_file = self.repo_root / "src" / "iland" / "res" / "project_file_metadata.txt"
-        if not metadata_file.exists():
-            self._append_misc_log("Update XML file skipped: metadata file not found.")
+        if not self.settings_field_meta:
+            self._load_settings_metadata()
+        if not self.settings_field_meta:
+            self._append_misc_log("Update XML file skipped: metadata file not found or empty.")
             return
+
+        created = 0
+        root = self._settings_xml_tree.getroot()
+        for key in self.settings_field_meta.keys():
+            exists = root.find("./" + "/".join(key.split("."))) is not None
+            self._ensure_xml_node(root, key)
+            if not exists:
+                created += 1
 
         try:
-            tree = ET.parse(xml_path)
-            root = tree.getroot()
-            xml_text = ET.tostring(root, encoding="unicode")
+            self._settings_xml_tree.write(self._settings_xml_path, encoding="utf-8", xml_declaration=True)
+            self._append_misc_log(
+                f"Update XML complete. Added {created} missing keys to {self._settings_xml_path.name}."
+            )
         except Exception as exc:
-            self._append_misc_log(f"Could not parse project XML: {exc}")
-            return
-
-        keys = []
-        for line in metadata_file.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith(";") or "=" not in stripped:
-                continue
-            key = stripped.split("=", 1)[0].strip()
-            if key and key != "gui.layout":
-                keys.append(key)
-
-        missing: List[str] = []
-        for key in keys:
-            pattern = re.escape(key)
-            if re.search(pattern, xml_text) is None:
-                missing.append(key)
-
-        report_file = xml_path.with_suffix(xml_path.suffix + ".missing_keys.txt")
-        report_file.write_text("\n".join(missing), encoding="utf-8")
-        self._append_misc_log(
-            f"Update XML analysis complete. Missing keys: {len(missing)}. Report: {report_file.name}"
-        )
+            self._append_misc_log(f"Could not write updated XML: {exc}")
 
     def _append_misc_log(self, message: str):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -2010,6 +2833,7 @@ class ILandDockWidget(QDockWidget):
         self.model_status_label.setText(
             f"Model status: running | year {max(1, self._current_year)} -> {self._active_target_year}"
         )
+        self._set_model_progress_state("running")
         self.status_label.setText(f"Running model for {years_to_run} year(s)...")
         self._append_workflow_log(
             f"RUN_YEARS requested: +{years_to_run} years from year {max(1, self._current_year)} to {self._active_target_year}."
@@ -2069,10 +2893,12 @@ class ILandDockWidget(QDockWidget):
                 shown_year = max(self._current_year, self._runtime_reported_year)
                 if self._model_paused:
                     self.model_status_label.setText(f"Model status: paused ({seconds}s) | year {shown_year}")
+                    self._set_model_progress_state("paused")
                 else:
                     self.model_status_label.setText(
                         f"Model status: running ({seconds}s) | year {shown_year} -> {self._active_target_year}"
                     )
+                    self._set_model_progress_state("running")
                 return
 
             if self._session_run_finalize_pending:
@@ -2084,10 +2910,12 @@ class ILandDockWidget(QDockWidget):
 
                 if self._session_last_error:
                     self.model_status_label.setText("Model status: run failed")
+                    self._set_model_progress_state("failed")
                     self.status_label.setText(f"Run Model failed: {self._session_last_error}")
                     self._append_workflow_log(f"RUN_YEARS failed: {self._session_last_error}")
                 elif self._session_stop_requested:
                     self.model_status_label.setText("Model status: stopped")
+                    self._set_model_progress_state("idle")
                     self.status_label.setText("Model stopped.")
                     self._append_workflow_log(
                         f"Run stopped by user after {self._session_run_completed_years}/{self._session_run_requested_years} year steps."
@@ -2096,6 +2924,7 @@ class ILandDockWidget(QDockWidget):
                     self._model_created = True
                     self._set_current_year_display(max(self._current_year, self._runtime_reported_year))
                     self.model_status_label.setText("Model status: completed")
+                    self._set_model_progress_state("success")
                     self.status_label.setText(f"Model completed through year {self._current_year}.")
                     self._append_workflow_log(f"RUN_YEARS completed. Current year: {self._current_year}")
                     self._autoload_project_data_on_success()
@@ -2124,6 +2953,7 @@ class ILandDockWidget(QDockWidget):
                 seconds = int(elapsed.total_seconds())
                 if self._model_paused:
                     self.model_status_label.setText(f"Model status: paused ({seconds}s)")
+                    self._set_model_progress_state("paused")
                 else:
                     shown_year = max(self._current_year, self._runtime_reported_year)
                     if self._active_target_year > 0:
@@ -2132,6 +2962,7 @@ class ILandDockWidget(QDockWidget):
                         )
                     else:
                         self.model_status_label.setText(f"Model status: running ({seconds}s) | year {shown_year}")
+                    self._set_model_progress_state("running")
             return
 
         self.model_run_progress.setMinimum(0)
@@ -2142,6 +2973,7 @@ class ILandDockWidget(QDockWidget):
                 self._model_created = True
                 self._set_current_year_display(1)
                 self.model_status_label.setText("Model status: created")
+                self._set_model_progress_state("success")
                 self.status_label.setText("Model created. Ready to run.")
                 self._append_workflow_log("Create Model completed successfully.")
             else:
@@ -2149,10 +2981,12 @@ class ILandDockWidget(QDockWidget):
                 if self._active_target_year > 0:
                     self._set_current_year_display(self._active_target_year)
                 self.model_status_label.setText("Model status: completed")
+                self._set_model_progress_state("success")
                 self._append_workflow_log("Model process completed successfully.")
                 self._autoload_project_data_on_success()
         else:
             self.model_status_label.setText(f"Model status: exited with code {code}")
+            self._set_model_progress_state("failed")
             self._append_workflow_log(f"Model process exited with code {code}.")
             if self._active_run_mode == "create":
                 self._model_created = False
@@ -2927,6 +3761,8 @@ class ILandDockWidget(QDockWidget):
             button_bg = "#3a3d40"
             button_hover = "#4a4e52"
             selected_bg = "#24537a"
+            progress_track = "#14171a"
+            progress_idle = "#6f7780"
         else:
             background = "#f5f5f5"
             dock_border = "#d0d0d0"
@@ -2937,6 +3773,8 @@ class ILandDockWidget(QDockWidget):
             button_bg = "#e1e1e1"
             button_hover = "#d4d4d4"
             selected_bg = "#d7e9ff"
+            progress_track = "#f1f3f5"
+            progress_idle = "#9aa3ad"
 
         return f"""
             QDockWidget {{
@@ -2991,5 +3829,27 @@ class ILandDockWidget(QDockWidget):
             QListWidget::item:selected {{
                 background: {selected_bg};
                 color: {text};
+            }}
+            QProgressBar#modelRunProgress {{
+                background: {progress_track};
+                border: 1px solid {field_border};
+                border-radius: 6px;
+                min-height: 12px;
+            }}
+            QProgressBar#modelRunProgress::chunk {{
+                background: {progress_idle};
+                border-radius: 5px;
+            }}
+            QProgressBar#modelRunProgress[runState="running"]::chunk {{
+                background: #2b7fff;
+            }}
+            QProgressBar#modelRunProgress[runState="success"]::chunk {{
+                background: #22a05f;
+            }}
+            QProgressBar#modelRunProgress[runState="paused"]::chunk {{
+                background: #d7911a;
+            }}
+            QProgressBar#modelRunProgress[runState="failed"]::chunk {{
+                background: #d1493f;
             }}
         """
