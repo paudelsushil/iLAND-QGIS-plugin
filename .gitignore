@@ -2,9 +2,22 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
+# Editor/project-local state
+.vscode/
+.idea/
+*.log
+
 # Local packaging output
 dist/
 build/
 
 # Runtime/cache artifacts used only on local machines
 runtimes/
+
+# Maintainer-only docs/scripts (not needed by end users)
+QGIS_COOKBOOK_COMPLIANCE.md
+REQUIRED_REPO_COMPONENTS.md
+package_plugin.ps1
+
+# Local nested copy folder
+iLAND_QGIS_plugin/
