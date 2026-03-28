@@ -171,6 +171,7 @@ class ILandDockWidget(QDockWidget):
         self._active_requested_years = 0
         self._runtime_reported_year = 0
         self._last_run_year_request = 10
+        self._legacy_cli_executable = ""
         self._is_loading_ui_state = False
         self._model_poll_timer = None
         self._workflow_log_full_backup = ""
@@ -972,6 +973,13 @@ class ILandDockWidget(QDockWidget):
             )
         return "iLAND runtime does not support persistent session mode. Install updated runtime."
 
+    def _is_legacy_session_startup_failure(self, ready: Dict[str, str]) -> bool:
+        boot = str(ready.get("boot", "")).lower()
+        return (
+            "invalid number of years to run" in boot
+            or ("usage:" in boot and "ilandc.exe <xml-project-file> <years>" in boot)
+        )
+
     def _session_command(self, command: str, timeout_seconds: int = 120) -> Dict[str, str]:
         with self._session_lock:
             if not self._session_is_alive() or self._session_process is None:
@@ -1014,6 +1022,13 @@ class ILandDockWidget(QDockWidget):
         if executable is None:
             return False
 
+        executable_str = str(executable)
+        if self._legacy_cli_executable and self._legacy_cli_executable != executable_str:
+            self._legacy_cli_executable = ""
+        if self._legacy_cli_executable == executable_str:
+            self.status_label.setText("Legacy iLANDc detected. Using compatibility run mode.")
+            return False
+
         output_dir = self.output_dir_edit.text().strip()
         component_name = "all"
         if self.selected_module_payload:
@@ -1041,13 +1056,21 @@ class ILandDockWidget(QDockWidget):
             self._session_project_file = project_file
             ready = self._read_session_reply(timeout_seconds=30)
             if ready.get("status") != "OK":
-                self._append_workflow_log(f"Session startup failed: {ready}")
+                is_legacy = self._is_legacy_session_startup_failure(ready)
+                if is_legacy:
+                    self._legacy_cli_executable = executable_str
+                    self._append_workflow_log(
+                        "Runtime does not support --session mode; switching to compatibility one-shot CLI mode."
+                    )
+                else:
+                    self._append_workflow_log(f"Session startup failed: {ready}")
                 self._stop_session()
                 self.status_label.setText(self._classify_session_startup_failure(ready, executable))
                 self.model_status_label.setText("Model status: session start failed")
                 return False
 
             self._append_workflow_log("Started persistent iLAND session backend.")
+            self._legacy_cli_executable = ""
             self.config.set_string("workflow_last_project", project_file)
             if output_dir:
                 self.config.set_string("workflow_output_dir", output_dir)
@@ -1094,7 +1117,21 @@ class ILandDockWidget(QDockWidget):
         if not self._model_created:
             self.status_label.setText("Create Model first, then run one year.")
             return
-        if not self._ensure_session(self.project_file_edit.text().strip()):
+        project_file = self.project_file_edit.text().strip()
+        if not self._ensure_session(project_file):
+            if self._legacy_cli_executable:
+                target_year = max(1, self._current_year + 1)
+                self._append_workflow_log(
+                    f"Run one year: compatibility mode active, executing one-shot run to year {target_year}."
+                )
+                self._start_model_process(
+                    project_file=project_file,
+                    years_int=target_year,
+                    run_mode="run",
+                    requested_increment=1,
+                    target_year=target_year,
+                )
+                return
             self._update_run_controls_state()
             return
 
@@ -1441,6 +1478,18 @@ class ILandDockWidget(QDockWidget):
             return
 
         if not self._ensure_session(project_file):
+            if self._legacy_cli_executable:
+                self._append_workflow_log(
+                    "Create Model: using compatibility mode (legacy iLANDc without session support)."
+                )
+                self._start_model_process(
+                    project_file=project_file,
+                    years_int=0,
+                    run_mode="create",
+                    requested_increment=0,
+                    target_year=max(0, self._current_year),
+                )
+                return
             self._update_run_controls_state()
             return
 
@@ -1914,9 +1963,6 @@ class ILandDockWidget(QDockWidget):
             self.status_label.setText("Project XML is required before running iLAND.")
             self._update_run_controls_state()
             return
-        if not self._ensure_session(project_file):
-            self._update_run_controls_state()
-            return
 
         ask_default = max(1, int(self.config.get_string("workflow_last_years", str(self._last_run_year_request))))
         prompt = f"How many years to run?\nCurrent year: {max(1, self._current_year)}."
@@ -1930,6 +1976,24 @@ class ILandDockWidget(QDockWidget):
             1,
         )
         if not ok:
+            return
+
+        if not self._ensure_session(project_file):
+            if self._legacy_cli_executable:
+                target_year = max(1, self._current_year) + years_to_run
+                self._append_workflow_log(
+                    f"Run Model: compatibility mode active, executing one-shot run to year {target_year}."
+                )
+                self._last_run_year_request = years_to_run
+                self._start_model_process(
+                    project_file=project_file,
+                    years_int=target_year,
+                    run_mode="run",
+                    requested_increment=years_to_run,
+                    target_year=target_year,
+                )
+                return
+            self._update_run_controls_state()
             return
 
         self._last_run_year_request = years_to_run
