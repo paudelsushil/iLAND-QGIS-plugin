@@ -1,4 +1,4 @@
-# iLAND Workbench QGIS Plugin
+# iLAND Workbench
 
 Dockable QGIS plugin that surfaces iLAND modules and submodules directly from the repository source tree.
 
