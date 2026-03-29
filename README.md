@@ -12,6 +12,40 @@ Dockable QGIS plugin that surfaces iLAND modules and submodules directly from th
 
 Maintainer: Sushil Paudel
 
+## Minimum Requirements and Compatibility
+
+### 1. Minimum requirements for plugin installation
+
+- QGIS Desktop 3.28 or newer.
+- A standard QGIS desktop installation (Windows, Linux, or macOS).
+- No extra Python package installation is required for plugin installation.
+- Install from the plugin ZIP package (not from a full repository ZIP) as publishing in QGIS repo is in process and will be onair soon.
+
+### 2. Minimum requirements for plugin operation (without running simulations)
+
+- The plugin can load and open its UI with QGIS only.
+- No separate iLAND executable is required for browsing modules, settings views, and basic plugin navigation.
+- Internet access is optional and only needed for features that query online release metadata.
+
+### 3. Minimum requirements for running iLAND simulations from the plugin
+
+- A compatible iLAND console runtime executable (iLANDc) is required.
+- You can provide runtime in either of two ways:
+  - Install via the Runtime tab (requires internet access).
+  - Manually point to an existing local iLANDc executable.
+- If iLANDc is not available, the plugin still installs and opens, but model run actions cannot execute.
+
+### 4. Version scenarios (including older versions)
+
+| QGIS version | Expected result | Notes |
+|---|---|---|
+| Below 3.28 | Not supported for install | Plugin metadata blocks installation. |
+| 3.28 to 3.35 | Supported | Standard install and operation expected. |
+| 3.36 (LTR) | Supported | Recommended for stable production use. |
+| 3.40 to 4.xx | Expected to work | Keep plugin updated to latest release. |
+
+
+
 ## Core Model
 
 This plugin is an integration layer around the original iLand core model.

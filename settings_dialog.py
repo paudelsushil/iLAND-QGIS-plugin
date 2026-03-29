@@ -42,9 +42,9 @@ def _first_qt_attr(root, names: List[str]):
 
 
 try:
-    from PyQt6.QtCore import Qt, QLocale  # type: ignore[import-not-found]
-    from PyQt6.QtGui import QIcon, QDoubleValidator, QIntValidator  # type: ignore[import-not-found]
-    from PyQt6.QtWidgets import (  # type: ignore[import-not-found]
+    from qgis.PyQt.QtCore import Qt, QLocale  # type: ignore[import-not-found]
+    from qgis.PyQt.QtGui import QIcon, QDoubleValidator, QIntValidator  # type: ignore[import-not-found]
+    from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
         QCheckBox,
         QDialog,
         QFileDialog,
@@ -66,10 +66,10 @@ try:
         QWidget,
         QComboBox,
     )
-except ImportError:  # pragma: no cover - runtime fallback for QGIS 3.x
-    from qgis.PyQt.QtCore import Qt, QLocale  # type: ignore[import-not-found]
-    from qgis.PyQt.QtGui import QIcon, QDoubleValidator, QIntValidator  # type: ignore[import-not-found]
-    from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - non-QGIS fallback for tooling/QGIS4 transition
+    from PyQt6.QtCore import Qt, QLocale  # type: ignore[import-not-found]
+    from PyQt6.QtGui import QIcon, QDoubleValidator, QIntValidator  # type: ignore[import-not-found]
+    from PyQt6.QtWidgets import (  # type: ignore[import-not-found]
         QCheckBox,
         QDialog,
         QFileDialog,

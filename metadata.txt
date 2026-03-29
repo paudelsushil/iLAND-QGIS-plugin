@@ -2,7 +2,7 @@
 name=iLAND Workbench
 qgisMinimumVersion=3.28
 qgisMaximumVersion=4.99
-version=3.0.0
+version=3.0.1
 author=Sushil Paudel
 email=clarkesushil@gmail.com
 description=QGIS-based iLAND Workbench developed for hassle-free installation and reproducible analysis workflows.
@@ -20,4 +20,4 @@ tags=iLAND,forest,landscape,simulation,analysis
 hasProcessingProvider=True
 
 [help]
-changelog=3.0.0 Added release automation, runtime management updates, and Zenodo-ready citation metadata.
+changelog=3.0.1 Fixed QGIS 3.36.2 loading issue; improved Qt binding compatibility.

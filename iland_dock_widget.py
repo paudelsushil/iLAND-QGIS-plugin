@@ -53,9 +53,9 @@ def _first_qt_attr(root, names: List[str]):
     raise AttributeError(f"Could not resolve Qt attributes: {names}")
 
 try:
-    from PyQt6.QtCore import QTimer, Qt  # type: ignore[import-not-found]
-    from PyQt6.QtGui import QGuiApplication, QIcon, QPalette, QPixmap
-    from PyQt6.QtWidgets import (
+    from qgis.PyQt.QtCore import QTimer, Qt  # type: ignore[import-not-found]
+    from qgis.PyQt.QtGui import QGuiApplication, QIcon, QPalette, QPixmap
+    from qgis.PyQt.QtWidgets import (
         QButtonGroup,
         QCheckBox,
         QDialog,
@@ -85,10 +85,10 @@ try:
         QMessageBox,
     )  # type: ignore[import-not-found]
 
-except ImportError:  # pragma: no cover - runtime fallback for QGIS 3.x
-    from qgis.PyQt.QtCore import QTimer, Qt  # type: ignore[import-not-found]
-    from qgis.PyQt.QtGui import QGuiApplication, QIcon, QPalette, QPixmap
-    from qgis.PyQt.QtWidgets import (
+except ImportError:  # pragma: no cover - non-QGIS fallback for tooling/QGIS4 transition
+    from PyQt6.QtCore import QTimer, Qt  # type: ignore[import-not-found]
+    from PyQt6.QtGui import QGuiApplication, QIcon, QPalette, QPixmap
+    from PyQt6.QtWidgets import (
         QButtonGroup,
         QCheckBox,
         QDialog,

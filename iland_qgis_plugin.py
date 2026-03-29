@@ -22,13 +22,13 @@ from __future__ import annotations
 from pathlib import Path
 
 try:
-    from PyQt6.QtCore import QCoreApplication, QLocale, Qt, QTranslator, QUrl  # type: ignore[import-not-found]
-    from PyQt6.QtGui import QAction, QDesktopServices, QIcon  # type: ignore[import-not-found]
-    from PyQt6.QtWidgets import QDockWidget  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover - runtime fallback for QGIS 3.x
     from qgis.PyQt.QtCore import QCoreApplication, QLocale, Qt, QTranslator, QUrl  # type: ignore[import-not-found]
     from qgis.PyQt.QtGui import QAction, QDesktopServices, QIcon  # type: ignore[import-not-found]
     from qgis.PyQt.QtWidgets import QDockWidget  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - non-QGIS fallback for tooling/QGIS4 transition
+    from PyQt6.QtCore import QCoreApplication, QLocale, Qt, QTranslator, QUrl  # type: ignore[import-not-found]
+    from PyQt6.QtGui import QAction, QDesktopServices, QIcon  # type: ignore[import-not-found]
+    from PyQt6.QtWidgets import QDockWidget  # type: ignore[import-not-found]
 
 from .config_manager import ILandPluginConfig
 from .iland_dock_widget import ILandDockWidget
