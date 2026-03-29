@@ -12,6 +12,12 @@ Dockable QGIS plugin that surfaces iLAND modules and submodules directly from th
 
 Maintainer: Sushil Paudel
 
+## Plugin Guide
+
+For a complete hands-on walkthrough of all tabs, menus, and workflows, see the plugin guide:
+
+- [Plugin Guide](plugin_guide.md)
+
 ## Minimum Requirements and Compatibility
 
 ### 1. Minimum requirements for plugin installation
