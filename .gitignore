@@ -18,6 +18,11 @@ runtimes/
 QGIS_COOKBOOK_COMPLIANCE.md
 REQUIRED_REPO_COMPONENTS.md
 package_plugin.ps1
+plugin_guide.md
+github release codes.txt
 
 # Local nested copy folder
 iLAND_QGIS_plugin/
+
+# Local core-model checkout used for development only
+iland-model-main/
