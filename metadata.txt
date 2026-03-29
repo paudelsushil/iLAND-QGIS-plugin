@@ -1,20 +1,3 @@
-# /********************************************************************************************
-##
-# iLAND Workbench — QGIS plugin for iLAND‑based ecological modeling
-# Copyright (C) 2026 Sushil Paudel
-#
-# This plugin is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# A full copy of the license can be found in the <a href="LICENSE">LICENSE file</a>.
-#
-# This plugin integrates iLand, an individual‑based forest landscape and disturbance model.
-# Copyright (C) 2009-2026 Werner Rammer, Rupert Seidl
-# For more information on the original iLand model, see https://iland-model.org
-# ********************************************************************************************/
-
 [general]
 name=iLAND Workbench
 qgisMinimumVersion=3.28
@@ -24,11 +7,11 @@ author=Sushil Paudel
 email=clarkesushil@gmail.com
 description=QGIS-based iLAND Workbench developed for hassle-free installation and reproducible analysis workflows.
 about=This plugin was developed as the third chapter analysis work of a PhD dissertation. It respectfully acknowledges the original
- iLand authors <a href="http://www.wabo.boku.ac.at/seidl.html">Rupert Seidl</a> and <a href="http://www.wabo.boku.ac.at/rammer.html">Werner Rammer</a>, currently at <a href="https://www.edfm.wzw.tum.de/en.html">TU Munich</a>, as the principal investigators of iLand, and extends sincere thanks to the full <a href="https://iland-model.org/team">iLand team</a>. This plugin is an independent open-source QGIS integration layer and is not an official distribution of the iLand core model. \n This plugin is distributed in the hope that it will be useful,
+ iLand authors <a href="http://www.wabo.boku.ac.at/seidl.html">Rupert Seidl</a> and <a href="http://www.wabo.boku.ac.at/rammer.html">Werner Rammer</a>, currently at <a href="https://www.edfm.wzw.tum.de/en.html">TU Munich</a>, as the principal investigators of iLand, and extends sincere thanks to the full <a href="https://iland-model.org/team">iLand team</a>. This plugin is an independent open-source QGIS integration layer and is not an official distribution of the iLand core model. External dependency: a compatible iLAND runtime (iLANDc executable) is required and must be installed separately or via the plugin Runtime tab. \n This plugin is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 tracker=https://github.com/paudelsushil/iLAND-QGIS-plugin/issues
 repository=https://github.com/paudelsushil/iLAND-QGIS-plugin
-homepage=https://iland-model.org
+homepage=https://github.com/paudelsushil/iLAND-QGIS-plugin#readme
 category=Vector
 icon=res/icon4.png
 experimental=True
@@ -37,4 +20,4 @@ tags=iLAND,forest,landscape,simulation,analysis
 hasProcessingProvider=True
 
 [help]
-changelog=2.9.0 Added cookbook phase-2 support: i18n loading scaffold, Help menu action with local/online docs, and qgis-plugin-ci workflow integration.
+changelog=3.0.0 Added release automation, runtime management updates, and Zenodo-ready citation metadata.
