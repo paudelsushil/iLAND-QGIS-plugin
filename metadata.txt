@@ -1,21 +1,20 @@
 [general]
 name=iLAND Workbench
+Category=Analysis
 qgisMinimumVersion=3.28
 qgisMaximumVersion=4.99
-version=3.0.2
-author=Sushil Paudel
+Author=Sushil Paudel
+Installed version=3.0.2
 email=clarkesushil@gmail.com
 description=QGIS-based iLAND Workbench developed for hassle-free installation and reproducible analysis workflows.
-about=This plugin was developed as the third chapter analysis work of a PhD dissertation. It respectfully acknowledges the original iLand authors <a href="http://www.wabo.boku.ac.at/seidl.html">Rupert Seidl</a> and <a href="http://www.wabo.boku.ac.at/rammer.html">Werner Rammer</a>, currently at <a href="https://www.edfm.wzw.tum.de/en.html">TU Munich</a>, as the principal investigators of iLand, and extends sincere thanks to the full <a href="https://iland-model.org/team">iLand team</a>. This plugin is an independent open-source QGIS integration layer and is not an official distribution of the iLand core model. External dependency: a compatible iLAND runtime (iLANDc executable) is required and must be installed separately or via the plugin Runtime tab. This plugin is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+about=This plugin was developed as the third chapter analysis work of a PhD dissertation. <br> It respectfully acknowledges the original iLand authors <a href="http://www.wabo.boku.ac.at/seidl.html">Rupert Seidl</a> and <a href="http://www.wabo.boku.ac.at/rammer.html">Werner Rammer</a>, currently at <a href="https://www.edfm.wzw.tum.de/en.html">TU Munich</a>, as the principal investigators of iLand, and extends sincere thanks to the full <a href="https://iland-model.org/team">iLand team</a>. <br> This plugin is an independent open-source QGIS integration layer and is not an official distribution of the iLand core model.<br> External dependency: a compatible iLAND runtime (iLANDc executable) is required and must be installed separately or via the plugin Runtime tab. <br> This plugin is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 tracker=https://github.com/paudelsushil/iLAND-QGIS-plugin/issues
 repository=https://github.com/paudelsushil/iLAND-QGIS-plugin
 homepage=https://github.com/paudelsushil/iLAND-QGIS-plugin#readme
-category=Vector
+
 icon=res/icon4.png
 experimental=True
 deprecated=False
-tags=iLAND,forest,landscape,simulation,analysis
+Tags=iLAND,forest,landscape,disturbance simulation,process based modelling,ecological modelling
 hasProcessingProvider=True
-
-[help]
-changelog=3.0.2 Fixed metadata parsing issue in QGIS Plugin Manager (about field formatting).
+Changelog=3.0.2 Fixed metadata parsing issue in QGIS Plugin Manager (about field formatting).
