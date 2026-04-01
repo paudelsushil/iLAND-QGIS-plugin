@@ -14,6 +14,18 @@ Maintainer: Sushil Paudel
 
 ## Release Notes
 
+### v4.0.2
+
+- Reworked QGIS 4 main-menu integration: iLAND is now exposed as a top-level menu and no longer auto-opens plugin UI at load time.
+- Updated menu layout for cleaner navigation: processing tools first, then a separator, followed by Get iLAND modules and iLAND Workbench Help.
+- Removed non-essential helper algorithms from Processing provider exposure: Build iLAND run command and Get latest iLAND release info.
+- Improved module discovery for nested source layouts (for example, `iland-model-main/src`) and added clearer diagnostics when repo-root configuration is invalid.
+
+### v4.0.1
+
+- Patch release: plugin now marked stable (`experimental=False`) in metadata for QGIS plugin manager.
+- Carries forward the full 4.0.0 workflow expansion listed below.
+
 ### v4.0.0 (on top of 3.0.2)
 
 This major update expands iLAND Workbench from metadata/runtime utilities into a full data-preparation workflow layer for climate, soil, and stand-grid inputs.
@@ -94,20 +106,18 @@ Suggested citation text for the core model in derivative tool documentation:
 Main processing tools (menu order in QGIS Processing > iLAND Workbench):
 
 1. List iLAND modules
-2. Build iLAND run command
-3. Get latest iLAND release info
-4. Validate existing iLand climate database
-5. Future Climate
-6. Historical Climate Data
-7. Validate daily climate NetCDF for iLand
-8. Build iLand climate database from daily NetCDF
-9. Build iLand climate from WorldClim/CMIP6 GeoTIFF
-10. Process disturbance history for iLand
-11. Generate field data CSV templates
-12. Download stand-grid source data
-13. Build iLand landscape from plot data
-14. Create iLAND project
-15. Soil Data Download
+2. Validate existing iLand climate database
+3. Future Climate
+4. Historical Climate Data
+5. Validate daily climate NetCDF for iLand
+6. Build iLand climate database from daily NetCDF
+7. Build iLand climate from WorldClim/CMIP6 GeoTIFF
+8. Process disturbance history for iLand
+9. Generate field data CSV templates
+10. Download stand-grid source data
+11. Build iLand landscape from plot data
+12. Create iLAND project
+13. Soil Data Download
 
 
 ## Citation:
@@ -117,7 +127,7 @@ Main processing tools (menu order in QGIS Processing > iLAND Workbench):
                    hassle-free installation and reproducible analysis 
                    workflows}},
   year         = {2026},
-  version      = {4.0.0},
+  version      = {4.0.2},
   publisher    = {Zenodo},
   doi          = {10.5281/zenodo.19300115},
   url          = {https://doi.org/10.5281/zenodo.19300115}

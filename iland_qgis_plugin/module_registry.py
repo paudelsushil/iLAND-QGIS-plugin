@@ -25,6 +25,7 @@ from typing import Iterable, List
 
 CODE_SUFFIXES = {".h", ".hpp", ".cpp", ".c", ".cxx", ".js", ".py", ".R", ".qml"}
 SKIP_DIR_NAMES = {"__pycache__", ".git", ".idea", ".vscode", "build"}
+SRC_HINT_DIRS = {"core", "iland", "ilandc", "output", "tools", "tests"}
 
 
 @dataclass
@@ -60,13 +61,50 @@ class ILandModuleRegistry:
         if direct.exists() and direct.is_dir():
             return direct
 
+        # Common repository wrappers used by distributions and plugin workspaces.
+        wrapped_candidates = [
+            self.repo_root / "iland-model-main" / "src",
+            self.repo_root / "iland-model" / "src",
+            self.repo_root / "iLAND" / "src",
+            self.repo_root / "iLand" / "src",
+        ]
+        for candidate in wrapped_candidates:
+            if candidate.exists() and candidate.is_dir() and self._looks_like_iland_src(candidate):
+                return candidate
+
         # Fallback: find a nested iLAND source root by locating src/iland/mainwindow.ui.
         for marker in self.repo_root.rglob("src/iland/mainwindow.ui"):
             src_root = marker.parent.parent
             if src_root.exists() and src_root.is_dir():
                 return src_root
 
+        # QGIS4/iLAND4 snapshots may not ship UI files, so discover by structure instead.
+        structural_candidates: List[Path] = []
+        for marker in self.repo_root.rglob("src/iland"):
+            src_root = marker.parent
+            if src_root.exists() and src_root.is_dir() and self._looks_like_iland_src(src_root):
+                structural_candidates.append(src_root)
+
+        if structural_candidates:
+            return self._pick_best_src_candidate(structural_candidates)
+
         return direct
+
+    def _looks_like_iland_src(self, src_root: Path) -> bool:
+        if not src_root.exists() or not src_root.is_dir():
+            return False
+        score = sum(1 for hint in SRC_HINT_DIRS if (src_root / hint).exists())
+        return score >= 2
+
+    def _pick_best_src_candidate(self, candidates: List[Path]) -> Path:
+        unique_candidates = list({candidate.resolve(): candidate for candidate in candidates}.values())
+        return max(
+            unique_candidates,
+            key=lambda candidate: (
+                sum(1 for hint in SRC_HINT_DIRS if (candidate / hint).exists()),
+                -len(candidate.parts),
+            ),
+        )
 
     def discover(self) -> List[ModuleInfo]:
         if not self.src_root.exists():

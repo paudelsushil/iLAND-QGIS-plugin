@@ -19,16 +19,17 @@
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 try:
     from qgis.PyQt.QtCore import QCoreApplication, QLocale, Qt, QTranslator, QUrl  # type: ignore[import-not-found]
     from qgis.PyQt.QtGui import QAction, QDesktopServices, QIcon  # type: ignore[import-not-found]
-    from qgis.PyQt.QtWidgets import QDockWidget  # type: ignore[import-not-found]
+    from qgis.PyQt.QtWidgets import QDockWidget, QMenu  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - non-QGIS fallback for tooling/QGIS4 transition
     from PyQt6.QtCore import QCoreApplication, QLocale, Qt, QTranslator, QUrl  # type: ignore[import-not-found]
     from PyQt6.QtGui import QAction, QDesktopServices, QIcon  # type: ignore[import-not-found]
-    from PyQt6.QtWidgets import QDockWidget  # type: ignore[import-not-found]
+    from PyQt6.QtWidgets import QDockWidget, QMenu  # type: ignore[import-not-found]
 
 from .config_manager import ILandPluginConfig
 from .iland_dock_widget import ILandDockWidget
@@ -40,9 +41,12 @@ class iLandWorkbenchPlugin:
 
     ACTION_OBJECT_NAME = "ilandWorkbenchAction"
     DOCK_OBJECT_NAME = "iLANDWorkbenchDock"
+    MENU_OBJECT_NAME = "iLANDWorkbenchMainMenu"
     MENU_NAME = "&iLAND"
     ACTION_TEXT = "iLAND Workbench"
     HELP_ACTION_OBJECT_NAME = "ilandWorkbenchHelpAction"
+    MODULES_ACTION_OBJECT_NAME = "ilandWorkbenchModulesAction"
+    PROCESSING_ACTION_PREFIX = "ilandWorkbenchProcessingAction_"
 
     def __init__(self, iface):
         self.iface = iface
@@ -51,6 +55,7 @@ class iLandWorkbenchPlugin:
         self.repo_root = self.config.get_repo_root()
         self.action = None
         self.help_action = None
+        self.modules_action = None
         self.dock_widget = None
         self.processing_provider = None
         self.translator = None
@@ -58,10 +63,13 @@ class iLandWorkbenchPlugin:
         self._new_project_action = None
         self._new_project_source = None
         self._reset_after_new_project = True
+        self.processing_actions = []
+        self.main_menu = None
 
     def initGui(self):
         self._cleanup_stale_ui()
         self._init_locale()
+        self._ensure_main_menu()
 
         icon_file = self.plugin_dir / "res" / "icon4.png"
         if not icon_file.exists():
@@ -76,15 +84,14 @@ class iLandWorkbenchPlugin:
         self.action.setText(action_title)
 
         self.iface.addToolBarIcon(self.action)
-        self._add_action_to_menu(self.action)
-        self._init_help_action(icon_path)
         self._register_processing_provider()
+        self._init_processing_menu_actions()
+        self._init_modules_action()
+        self._init_help_action(icon_path)
         self._connect_new_project_hooks()
 
-        # User requirement: open plugin tools in a dock sidebar immediately on load.
-        self.run()
-
     def unload(self):
+        self._remove_modules_action()
         self._remove_help_action()
 
         if self.action is not None:
@@ -93,6 +100,8 @@ class iLandWorkbenchPlugin:
             self.action.deleteLater()
             self.action = None
 
+        self._remove_processing_menu_actions()
+        self._remove_main_menu()
         self._unregister_processing_provider()
         self._disconnect_new_project_hooks()
 
@@ -172,13 +181,36 @@ class iLandWorkbenchPlugin:
         # leave dangling C++ references and cause access violations on mouse events.
         # Keep action cleanup non-destructive; unload() handles normal teardown.
         for action in main_window.findChildren(QAction):
-            if action.objectName() not in {self.ACTION_OBJECT_NAME, self.HELP_ACTION_OBJECT_NAME}:
+            action_name = action.objectName() or ""
+            if (
+                action_name
+                not in {
+                    self.ACTION_OBJECT_NAME,
+                    self.HELP_ACTION_OBJECT_NAME,
+                    self.MODULES_ACTION_OBJECT_NAME,
+                }
+                and not action_name.startswith(self.PROCESSING_ACTION_PREFIX)
+            ):
                 continue
             try:
                 self.iface.removeToolBarIcon(action)
             except Exception:
                 pass
             self._remove_action_from_menu(action)
+
+        # Remove stale top-level iLAND menu from the menu bar.
+        for menu in main_window.findChildren(QMenu):
+            if menu.objectName() != self.MENU_OBJECT_NAME:
+                continue
+            try:
+                menu_action = menu.menuAction()
+                main_window.menuBar().removeAction(menu_action)
+            except Exception:
+                pass
+            try:
+                menu.deleteLater()
+            except Exception:
+                pass
 
         # Remove stale dock widgets with our known object name.
         for dock in main_window.findChildren(QDockWidget):
@@ -194,25 +226,72 @@ class iLandWorkbenchPlugin:
                 pass
 
     def _is_our_action(self, action: QAction) -> bool:
-        return action.objectName() in {
+        action_name = action.objectName() or ""
+        return action_name in {
             self.ACTION_OBJECT_NAME,
             self.HELP_ACTION_OBJECT_NAME,
-        }
+            self.MODULES_ACTION_OBJECT_NAME,
+        } or action_name.startswith(self.PROCESSING_ACTION_PREFIX)
 
     def _add_action_to_menu(self, action: QAction):
-        if hasattr(self.iface, "addPluginToVectorMenu"):
-            self.iface.addPluginToVectorMenu(self.MENU_NAME, action)
+        if self.main_menu is not None:
+            self.main_menu.addAction(action)
         else:
             self.iface.addPluginToMenu(self.MENU_NAME, action)
 
     def _remove_action_from_menu(self, action: QAction):
         try:
-            if hasattr(self.iface, "removePluginVectorMenu"):
-                self.iface.removePluginVectorMenu(self.MENU_NAME, action)
+            if self.main_menu is not None:
+                self.main_menu.removeAction(action)
             else:
                 self.iface.removePluginMenu(self.MENU_NAME, action)
         except Exception:
             pass
+
+    def _ensure_main_menu(self):
+        main_window = self.iface.mainWindow()
+        menu_bar = main_window.menuBar()
+
+        for menu in main_window.findChildren(QMenu):
+            if menu.objectName() == self.MENU_OBJECT_NAME:
+                self.main_menu = menu
+                return
+
+        menu = QMenu(self.MENU_NAME, main_window)
+        menu.setObjectName(self.MENU_OBJECT_NAME)
+
+        actions = menu_bar.actions()
+        help_index = -1
+        for idx, action in enumerate(actions):
+            menu_obj = action.menu()
+            action_text = (action.text() or "").replace("&", "").lower()
+            menu_title = (menu_obj.title() if menu_obj is not None else "").replace("&", "").lower()
+            if action_text == "help" or menu_title == "help":
+                help_index = idx
+                break
+
+        if help_index >= 0 and help_index + 1 < len(actions):
+            menu_bar.insertMenu(actions[help_index + 1], menu)
+        else:
+            menu_bar.addMenu(menu)
+
+        self.main_menu = menu
+
+    def _remove_main_menu(self):
+        if self.main_menu is None:
+            return
+
+        try:
+            self.iface.mainWindow().menuBar().removeAction(self.main_menu.menuAction())
+        except Exception:
+            pass
+
+        try:
+            self.main_menu.deleteLater()
+        except Exception:
+            pass
+
+        self.main_menu = None
 
     def tr(self, text: str) -> str:
         return QCoreApplication.translate("iLandWorkbenchPlugin", text)
@@ -249,20 +328,40 @@ class iLandWorkbenchPlugin:
         self.help_action.setWhatsThis(self.tr("Open local help page, falling back to project website"))
         self.help_action.triggered.connect(self._show_help)
 
-        if hasattr(self.iface, "pluginHelpMenu"):
-            self.iface.pluginHelpMenu().addAction(self.help_action)
-        else:
-            self.iface.addPluginToMenu(self.MENU_NAME, self.help_action)
+        self._add_action_to_menu(self.help_action)
+
+    def _init_modules_action(self):
+        self.modules_action = QAction(self.tr("Get iLAND modules"), self.iface.mainWindow())
+        self.modules_action.setObjectName(self.MODULES_ACTION_OBJECT_NAME)
+        self.modules_action.setStatusTip(self.tr("List discovered iLAND modules"))
+        self.modules_action.setWhatsThis(self.tr("Run module discovery for the configured iLAND source tree"))
+        self.modules_action.triggered.connect(
+            lambda checked=False: self._run_processing_algorithm("iland:list_modules")
+        )
+
+        if self.main_menu is not None:
+            self.main_menu.addSeparator()
+        self._add_action_to_menu(self.modules_action)
+
+    def _remove_modules_action(self):
+        if self.modules_action is None:
+            return
+
+        try:
+            self.modules_action.triggered.disconnect()
+        except Exception:
+            pass
+
+        self._remove_action_from_menu(self.modules_action)
+        self.modules_action.deleteLater()
+        self.modules_action = None
 
     def _remove_help_action(self):
         if self.help_action is None:
             return
 
         try:
-            if hasattr(self.iface, "pluginHelpMenu"):
-                self.iface.pluginHelpMenu().removeAction(self.help_action)
-            else:
-                self.iface.removePluginMenu(self.MENU_NAME, self.help_action)
+            self._remove_action_from_menu(self.help_action)
         except Exception:
             pass
         self.help_action.deleteLater()
@@ -274,6 +373,94 @@ class iLandWorkbenchPlugin:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(local_help)))
             return
         QDesktopServices.openUrl(QUrl("https://iland-model.org/"))
+
+    def _processing_menu_items(self):
+        return [
+            ("iland:validate_native_climate", self.tr("Validate existing iLand climate database")),
+            ("iland:future_climate", self.tr("Future Climate")),
+            ("iland:historical_climate_data", self.tr("Historical Climate Data")),
+            ("iland:validate_climate_netcdf", self.tr("Validate daily climate NetCDF for iLand")),
+            ("iland:build_climate_database_netcdf", self.tr("Build iLand climate database from daily NetCDF")),
+            ("iland:build_climate_from_geotiff", self.tr("Build iLand climate from WorldClim/CMIP6 GeoTIFF")),
+            ("iland:process_disturbance_history", self.tr("Process disturbance history for iLand")),
+            ("iland:generate_data_templates", self.tr("Generate field data CSV templates")),
+            ("iland:download_stand_grid_source", self.tr("Download stand-grid source data")),
+            ("iland:build_landscape_from_plots", self.tr("Build iLand landscape from plot data")),
+            ("iland:create_iland_project", self.tr("Create iLAND project")),
+            ("iland:soil_data_download", self.tr("Soil Data Download")),
+        ]
+
+    def _init_processing_menu_actions(self):
+        self._remove_processing_menu_actions()
+
+        for algorithm_id, action_text in self._processing_menu_items():
+            action = QAction(action_text, self.iface.mainWindow())
+            action.setObjectName(
+                f"{self.PROCESSING_ACTION_PREFIX}{algorithm_id.replace(':', '_')}"
+            )
+            action.triggered.connect(
+                lambda checked=False, aid=algorithm_id: self._run_processing_algorithm(aid)
+            )
+            self._add_action_to_menu(action)
+            self.processing_actions.append(action)
+
+    def _remove_processing_menu_actions(self):
+        if not self.processing_actions:
+            return
+
+        for action in self.processing_actions:
+            try:
+                action.triggered.disconnect()
+            except Exception:
+                pass
+            self._remove_action_from_menu(action)
+            action.deleteLater()
+
+        self.processing_actions = []
+
+    def _run_processing_algorithm(self, algorithm_id: str):
+        if importlib.util.find_spec("processing") is None:
+            self._push_message(
+                self.tr("Processing unavailable"),
+                self.tr("QGIS Processing framework is not available."),
+                level="warning",
+            )
+            return
+
+        processing = __import__("processing")  # type: ignore[import-not-found]
+        try:
+            processing.execAlgorithmDialog(algorithm_id, {})
+        except Exception as exc:
+            self._push_message(
+                self.tr("Could not run processing tool"),
+                self.tr(f"{algorithm_id}: {exc}"),
+                level="critical",
+            )
+
+    def _push_message(self, title: str, text: str, level: str = "info"):
+        bar_getter = getattr(self.iface, "messageBar", None)
+        if callable(bar_getter):
+            bar = bar_getter()
+            if bar is not None:
+                try:
+                    from qgis.core import Qgis  # type: ignore[import-not-found]
+
+                    qgis_level = {
+                        "info": Qgis.MessageLevel.Info,
+                        "warning": Qgis.MessageLevel.Warning,
+                        "critical": Qgis.MessageLevel.Critical,
+                    }.get(level, Qgis.MessageLevel.Info)
+                    bar.pushMessage(title, text, level=qgis_level)
+                    return
+                except Exception:
+                    pass
+
+        try:
+            from qgis.PyQt.QtWidgets import QMessageBox  # type: ignore[import-not-found]
+        except Exception:  # pragma: no cover
+            from PyQt6.QtWidgets import QMessageBox  # type: ignore[import-not-found]
+
+        QMessageBox.warning(self.iface.mainWindow(), title, text)
 
     def _connect_new_project_hooks(self):
         action_getter = getattr(self.iface, "actionNewProject", None)

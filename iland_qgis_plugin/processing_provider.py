@@ -50,6 +50,7 @@ except ImportError as exc:  # pragma: no cover
     raise RuntimeError("QGIS core classes are required to load the iLAND processing provider") from exc
 
 from .module_registry import ILandModuleRegistry, SubmoduleInfo
+from .config_manager import ILandPluginConfig
 
 from .climate_processing import (
     ILandValidateNativeClimateAlgorithm,
@@ -103,8 +104,6 @@ class ILandProcessingProvider(QgsProcessingProvider):
 
     def loadAlgorithms(self):
         self.addAlgorithm(ILandListModulesAlgorithm(self.repo_root))
-        self.addAlgorithm(ILandBuildCommandAlgorithm(self.repo_root))
-        self.addAlgorithm(ILandLatestReleaseAlgorithm(self.repo_root))
 
         self.addAlgorithm(ILandValidateNativeClimateAlgorithm())
         self.addAlgorithm(ILandFutureClimateDownloadAlgorithm())
@@ -131,6 +130,7 @@ class ILandListModulesAlgorithm(QgsProcessingAlgorithm):
     def __init__(self, repo_root: Path):
         super().__init__()
         self.repo_root = Path(repo_root)
+        self.plugin_dir = Path(__file__).resolve().parent
 
     def name(self) -> str:
         return "list_modules"
@@ -169,13 +169,20 @@ class ILandListModulesAlgorithm(QgsProcessingAlgorithm):
         include_files = self.parameterAsBool(parameters, self.INCLUDE_FILES, context)
         output_json = self.parameterAsFileOutput(parameters, self.OUTPUT_JSON, context)
 
-        registry = ILandModuleRegistry(repo_root=self.repo_root)
+        effective_repo_root = self._resolve_effective_repo_root()
+        registry = ILandModuleRegistry(repo_root=effective_repo_root)
         modules = registry.discover()
         if not modules:
-            raise QgsProcessingException("No iLAND modules discovered. Ensure src/ exists at repository root.")
+            raise QgsProcessingException(
+                "No iLAND modules discovered. "
+                f"repo_root={effective_repo_root}. "
+                f"resolved_src_root={registry.src_root}. "
+                "Set the iLAND repository root in plugin settings if this path is incorrect."
+            )
 
         payload: Dict[str, object] = {
-            "repo_root": str(self.repo_root),
+            "repo_root": str(effective_repo_root),
+            "resolved_src_root": str(registry.src_root),
             "module_count": len(modules),
             "modules": [
                 {
@@ -194,6 +201,12 @@ class ILandListModulesAlgorithm(QgsProcessingAlgorithm):
 
     def createInstance(self):
         return ILandListModulesAlgorithm(self.repo_root)
+
+    def _resolve_effective_repo_root(self) -> Path:
+        configured_root = ILandPluginConfig(plugin_dir=self.plugin_dir).get_repo_root()
+        if configured_root.exists():
+            return configured_root
+        return self.repo_root
 
     def _serialize_submodules(self, submodules: List[SubmoduleInfo], include_files: bool) -> List[Dict[str, object]]:
         serialized: List[Dict[str, object]] = []
