@@ -28,6 +28,11 @@ from pathlib import Path
 from typing import Dict, List
 
 try:
+    from qgis.PyQt.QtGui import QIcon  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover
+    from PyQt6.QtGui import QIcon  # type: ignore[import-not-found]
+
+try:
     from qgis.core import (
         QgsProcessing,
         QgsProcessingAlgorithm,
@@ -46,6 +51,23 @@ except ImportError as exc:  # pragma: no cover
 
 from .module_registry import ILandModuleRegistry, SubmoduleInfo
 
+from .climate_processing import (
+    ILandValidateNativeClimateAlgorithm,
+    ILandFutureClimateDownloadAlgorithm,
+    ILandHistoricalClimateDataAlgorithm,
+    ILandBuildClimateFromGeoTIFFAlgorithm,
+    ILandValidateClimateNetCDFAlgorithm,
+    ILandBuildClimateDatabaseAlgorithm,
+)
+from .disturbance_processing import ILandProcessDisturbanceHistoryAlgorithm
+from .landscape_builder import (
+    ILandGenerateDataTemplatesAlgorithm,
+    ILandBuildLandscapeFromPlotsAlgorithm,
+    ILandDownloadStandGridSourceAlgorithm,
+)
+from .project_setup_processing import ILandCreateProjectAlgorithm
+from .soil_processing import ILandSoilDataDownloadAlgorithm
+
 
 class ILandProcessingProvider(QgsProcessingProvider):
     """Processing provider exposing iLAND helper algorithms."""
@@ -53,6 +75,7 @@ class ILandProcessingProvider(QgsProcessingProvider):
     def __init__(self, repo_root: Path):
         super().__init__()
         self.repo_root = Path(repo_root)
+        self._icon = self._resolve_provider_icon()
 
     def id(self) -> str:
         return "iland"
@@ -64,12 +87,39 @@ class ILandProcessingProvider(QgsProcessingProvider):
         return "iLAND Workbench"
 
     def icon(self):
+        if self._icon is not None:
+            return self._icon
         return super().icon()
+
+    def _resolve_provider_icon(self):
+        icon_candidates = [
+            Path(__file__).resolve().parent / "res" / "icon4.png",
+            Path(__file__).resolve().parent / "res" / "icon.svg",
+        ]
+        for icon_path in icon_candidates:
+            if icon_path.exists() and icon_path.is_file():
+                return QIcon(str(icon_path))
+        return None
 
     def loadAlgorithms(self):
         self.addAlgorithm(ILandListModulesAlgorithm(self.repo_root))
         self.addAlgorithm(ILandBuildCommandAlgorithm(self.repo_root))
         self.addAlgorithm(ILandLatestReleaseAlgorithm(self.repo_root))
+
+        self.addAlgorithm(ILandValidateNativeClimateAlgorithm())
+        self.addAlgorithm(ILandFutureClimateDownloadAlgorithm())
+        self.addAlgorithm(ILandHistoricalClimateDataAlgorithm())
+        self.addAlgorithm(ILandValidateClimateNetCDFAlgorithm())
+        self.addAlgorithm(ILandBuildClimateDatabaseAlgorithm())
+        self.addAlgorithm(ILandBuildClimateFromGeoTIFFAlgorithm())
+
+        self.addAlgorithm(ILandProcessDisturbanceHistoryAlgorithm())
+
+        self.addAlgorithm(ILandGenerateDataTemplatesAlgorithm())
+        self.addAlgorithm(ILandDownloadStandGridSourceAlgorithm())
+        self.addAlgorithm(ILandBuildLandscapeFromPlotsAlgorithm())
+        self.addAlgorithm(ILandCreateProjectAlgorithm())
+        self.addAlgorithm(ILandSoilDataDownloadAlgorithm())
 
 
 class ILandListModulesAlgorithm(QgsProcessingAlgorithm):

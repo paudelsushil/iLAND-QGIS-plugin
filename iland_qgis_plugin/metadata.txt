@@ -4,7 +4,7 @@ category=Vector
 qgisMinimumVersion=3.28
 qgisMaximumVersion=4.99
 author=Sushil Paudel
-version=3.0.2
+version=4.0.0
 email=clarkesushil@gmail.com
 description=QGIS-based iLAND Workbench developed for hassle-free installation and reproducible analysis workflows.
 about=This plugin was developed as the third chapter analysis work of a PhD dissertation. 
@@ -19,4 +19,4 @@ tags=iLAND, forest, landscape, disturbance-simulation, process-based-modelling, 
 hasProcessingProvider=True
 
 [help]
-changelog=3.0.2 Fixed metadata parsing issue in QGIS Plugin Manager (about field formatting).
+changelog=4.0.0 Major update since 3.0.2: end-to-end climate, soil, and stand-grid data workflows; stronger cancellation and MB/MBps transfer telemetry; project create/reset UX improvements; landscape pre-flight validation before model creation; and QGIS 4 startup stability hardening.

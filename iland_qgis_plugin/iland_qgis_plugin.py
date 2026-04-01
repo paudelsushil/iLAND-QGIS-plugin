@@ -55,6 +55,9 @@ class iLandWorkbenchPlugin:
         self.processing_provider = None
         self.translator = None
         self.translator_path = None
+        self._new_project_action = None
+        self._new_project_source = None
+        self._reset_after_new_project = True
 
     def initGui(self):
         self._cleanup_stale_ui()
@@ -76,6 +79,7 @@ class iLandWorkbenchPlugin:
         self._add_action_to_menu(self.action)
         self._init_help_action(icon_path)
         self._register_processing_provider()
+        self._connect_new_project_hooks()
 
         # User requirement: open plugin tools in a dock sidebar immediately on load.
         self.run()
@@ -90,6 +94,7 @@ class iLandWorkbenchPlugin:
             self.action = None
 
         self._unregister_processing_provider()
+        self._disconnect_new_project_hooks()
 
         if self.dock_widget is not None:
             self.iface.removeDockWidget(self.dock_widget)
@@ -150,21 +155,30 @@ class iLandWorkbenchPlugin:
         self.processing_provider = None
 
     def _cleanup_stale_ui(self):
+        # Safety guard for QGIS 4 / Qt6.
+        # Aggressive action/dock cleanup is primarily needed for plugin reload cycles,
+        # but it can destabilize UI objects during startup in some builds.
+        try:
+            from qgis.core import Qgis  # type: ignore[import-not-found]
+
+            if int(getattr(Qgis, "QGIS_VERSION_INT", 0)) >= 40000:
+                return
+        except Exception:
+            pass
+
         main_window = self.iface.mainWindow()
 
-        # Remove stale toolbar/menu actions from previous plugin instances.
+        # QGIS 4 / Qt6: deleting QAction objects while toolbars are active can
+        # leave dangling C++ references and cause access violations on mouse events.
+        # Keep action cleanup non-destructive; unload() handles normal teardown.
         for action in main_window.findChildren(QAction):
-            if not self._is_our_action(action):
+            if action.objectName() not in {self.ACTION_OBJECT_NAME, self.HELP_ACTION_OBJECT_NAME}:
                 continue
             try:
                 self.iface.removeToolBarIcon(action)
             except Exception:
                 pass
             self._remove_action_from_menu(action)
-            try:
-                action.deleteLater()
-            except Exception:
-                pass
 
         # Remove stale dock widgets with our known object name.
         for dock in main_window.findChildren(QDockWidget):
@@ -183,9 +197,6 @@ class iLandWorkbenchPlugin:
         return action.objectName() in {
             self.ACTION_OBJECT_NAME,
             self.HELP_ACTION_OBJECT_NAME,
-        } or action.text() in {
-            self.ACTION_TEXT,
-            self.tr("iLAND Workbench Help"),
         }
 
     def _add_action_to_menu(self, action: QAction):
@@ -263,3 +274,81 @@ class iLandWorkbenchPlugin:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(local_help)))
             return
         QDesktopServices.openUrl(QUrl("https://iland-model.org/"))
+
+    def _connect_new_project_hooks(self):
+        action_getter = getattr(self.iface, "actionNewProject", None)
+        if callable(action_getter):
+            action = action_getter()
+            if action is not None:
+                try:
+                    action.triggered.connect(self._on_qgis_new_project_triggered)
+                    self._new_project_action = action
+                except Exception:
+                    self._new_project_action = None
+
+        if hasattr(self.iface, "newProjectCreated"):
+            try:
+                self.iface.newProjectCreated.connect(self._on_qgis_new_project_created)
+                self._new_project_source = "iface"
+                return
+            except Exception:
+                pass
+
+        try:
+            from qgis.core import QgsProject  # type: ignore[import-not-found]
+            project = QgsProject.instance()
+            if hasattr(project, "cleared"):
+                project.cleared.connect(self._on_qgis_new_project_created)
+                self._new_project_source = "project"
+        except Exception:
+            self._new_project_source = None
+
+    def _disconnect_new_project_hooks(self):
+        if self._new_project_action is not None:
+            try:
+                self._new_project_action.triggered.disconnect(self._on_qgis_new_project_triggered)
+            except Exception:
+                pass
+            self._new_project_action = None
+
+        if self._new_project_source == "iface" and hasattr(self.iface, "newProjectCreated"):
+            try:
+                self.iface.newProjectCreated.disconnect(self._on_qgis_new_project_created)
+            except Exception:
+                pass
+        elif self._new_project_source == "project":
+            try:
+                from qgis.core import QgsProject  # type: ignore[import-not-found]
+                QgsProject.instance().cleared.disconnect(self._on_qgis_new_project_created)
+            except Exception:
+                pass
+
+        self._new_project_source = None
+        self._reset_after_new_project = True
+
+    def _on_qgis_new_project_triggered(self):
+        self._reset_after_new_project = True
+        if self.dock_widget is None:
+            return
+
+        try:
+            self._reset_after_new_project = self.dock_widget.prepare_for_qgis_new_project()
+        except Exception:
+            self._reset_after_new_project = True
+
+    def _on_qgis_new_project_created(self, *args):
+        del args
+        if self.dock_widget is None:
+            self._reset_after_new_project = True
+            return
+
+        if not self._reset_after_new_project:
+            self._reset_after_new_project = True
+            return
+
+        try:
+            self.dock_widget.reset_for_qgis_new_project()
+        except Exception:
+            pass
+        finally:
+            self._reset_after_new_project = True

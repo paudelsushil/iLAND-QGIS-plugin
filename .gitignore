@@ -21,8 +21,9 @@ package_plugin.ps1
 plugin_guide.md
 github release codes.txt
 
-# Local nested copy folder
-iLAND_QGIS_plugin/
+# Keep active plugin package tracked
+!iland_qgis_plugin/
+!iland_qgis_plugin/**
 
 # Local core-model checkout used for development only
 iland-model-main/

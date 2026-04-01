@@ -131,6 +131,7 @@ MSGBOX_NO = _resolve_qt_attr(QMessageBox, "StandardButton.No") or getattr(QMessa
 
 from .config_manager import ILandPluginConfig
 from .iland_ui_catalog import ILandUICatalog
+from .landscape_validation import ILandLandscapeValidator
 from .module_registry import ILandModuleRegistry, ModuleInfo, SubmoduleInfo
 from .runtime_manager import ILandRuntimeManager
 from .settings_dialog import ILandSettingsDialog
@@ -160,7 +161,7 @@ class ILandDockWidget(QDockWidget):
     ]
 
     def __init__(self, repo_root: Path, plugin_dir: Path, config: ILandPluginConfig, parent=None, iface=None):
-        super().__init__("", parent)
+        super().__init__("iLAND Workbench", parent)
         self.repo_root = Path(repo_root)
         self.plugin_dir = Path(plugin_dir)
         self.config = config
@@ -307,12 +308,18 @@ class ILandDockWidget(QDockWidget):
         )
         self.project_file_edit = QLineEdit()
         self.project_file_edit.setPlaceholderText("Path to xml project file...")
+        self.project_file_create_button = QPushButton("Create Project")
+        self.project_file_create_button.setMinimumHeight(28)
+        self.project_file_create_button.setToolTip("Create iLAND project and load its XML")
+        self.project_file_create_button.clicked.connect(self._create_project_from_workflow)
         self.project_file_browse_button = QPushButton("...")
-        self.project_file_browse_button.setFixedWidth(28)
+        self.project_file_browse_button.setFixedSize(28, 28)
+        self.project_file_browse_button.setToolTip("Load existing iLAND project XML")
         self.project_file_browse_button.clicked.connect(self._browse_project_xml)
         project_row = QHBoxLayout()
         project_row_widget = QWidget()
         project_row_widget.setLayout(project_row)
+        project_row.addWidget(self.project_file_create_button)
         project_row.addWidget(self.project_file_edit)
         project_row.addWidget(self.project_file_browse_button)
 
@@ -327,7 +334,7 @@ class ILandDockWidget(QDockWidget):
         output_row.addWidget(self.output_dir_edit)
         output_row.addWidget(self.output_dir_browse_button)
 
-        form.addRow("Project XML", project_row_widget)
+        form.addRow(project_row_widget)
         form.addRow("Output directory", output_row_widget)
         self.current_year_label = QLabel("1")
         form.addRow("Current year", self.current_year_label)
@@ -801,7 +808,7 @@ class ILandDockWidget(QDockWidget):
 
     def set_repo_root(self, repo_root: Path):
         self.repo_root = Path(repo_root)
-        self.output_dir_edit.setText(str(self.repo_root / "output"))
+        self.output_dir_edit.clear()
         self.registry = ILandModuleRegistry(repo_root=self.repo_root)
         self.ui_catalog = ILandUICatalog(repo_root=self.repo_root)
         self.refresh_modules()
@@ -1487,11 +1494,230 @@ class ILandDockWidget(QDockWidget):
             self._refresh_runtime_compatibility_panel()
             self._update_run_controls_state()
 
+    def _create_project_from_workflow(self):
+        import importlib.util
+
+        if importlib.util.find_spec("processing") is None:
+            QMessageBox.warning(
+                self,
+                "Processing unavailable",
+                "QGIS Processing framework is not available. Open Processing Toolbox and run iLAND > Create iLAND project.",
+            )
+            return
+
+        processing = __import__("processing")  # type: ignore[import-not-found]
+        result = processing.execAlgorithmDialog("iland:create_iland_project", {})
+
+        if not isinstance(result, dict) or not result:
+            return
+
+        xml_path = str(
+            result.get("OUTPUT_PROJECT_XML")
+            or result.get("project_xml")
+            or result.get("Project XML")
+            or ""
+        ).strip()
+        if not xml_path:
+            return
+
+        self.project_file_edit.setText(xml_path)
+        self.output_dir_edit.clear()
+        self._refresh_species_controls()
+        self._refresh_runtime_compatibility_panel()
+        self._update_run_controls_state()
+        self.status_label.setText("Created and loaded iLAND project XML.")
+
+    def has_active_workflow_state(self) -> bool:
+        project_file = self.project_file_edit.text().strip()
+        output_dir = self.output_dir_edit.text().strip()
+        has_log_text = bool(self.workflow_log_output.toPlainText().strip())
+        return bool(project_file or output_dir or has_log_text or self._model_created or self._is_model_running())
+
+    def prepare_for_qgis_new_project(self) -> bool:
+        if not self.has_active_workflow_state():
+            return True
+
+        is_running = self._is_model_running()
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("New QGIS project detected")
+        dialog.setIcon(
+            _first_qt_attr(QMessageBox, ["Icon.Warning", "Warning"])
+            if is_running
+            else _first_qt_attr(QMessageBox, ["Icon.Question", "Question"])
+        )
+        dialog.setText("Reset iLAND Workbench for the new QGIS project?")
+        if is_running:
+            dialog.setInformativeText(
+                "Model processing is currently running. Choose Save/Save As first, then iLAND will stop and reset."
+            )
+        else:
+            dialog.setInformativeText(
+                "Choose Save, Save As, or Discard to reset plugin state for the new project."
+            )
+
+        save_button = dialog.addButton(
+            "Save",
+            _first_qt_attr(QMessageBox, ["ButtonRole.AcceptRole", "AcceptRole"]),
+        )
+        save_as_button = dialog.addButton(
+            "Save As...",
+            _first_qt_attr(QMessageBox, ["ButtonRole.ActionRole", "ActionRole"]),
+        )
+        discard_button = dialog.addButton(
+            "Discard",
+            _first_qt_attr(QMessageBox, ["ButtonRole.DestructiveRole", "DestructiveRole"]),
+        )
+        keep_button = dialog.addButton(
+            "Keep Current iLAND State",
+            _first_qt_attr(QMessageBox, ["ButtonRole.RejectRole", "RejectRole"]),
+        )
+        dialog.exec()
+
+        clicked = dialog.clickedButton()
+        if clicked == keep_button:
+            self.status_label.setText("Keeping current iLAND state for now.")
+            return False
+
+        if clicked == save_button and not self._save_current_qgis_project(mode="save"):
+            self.status_label.setText("Project save was canceled; iLAND reset skipped.")
+            return False
+        if clicked == save_as_button and not self._save_current_qgis_project(mode="save_as"):
+            self.status_label.setText("Save As was canceled; iLAND reset skipped.")
+            return False
+        if clicked not in {save_button, save_as_button, discard_button}:
+            return False
+
+        if self._is_model_running():
+            self._stop_model()
+            if self._is_model_running():
+                QMessageBox.warning(
+                    self,
+                    "Reset deferred",
+                    "Model is still stopping. Wait a moment and create a new project again.",
+                )
+                return False
+
+        return True
+
+    def reset_for_qgis_new_project(self):
+        if self._is_model_running():
+            self._stop_model()
+            if self._is_model_running():
+                self.status_label.setText("Model still running; reset deferred.")
+                return
+
+        if self._model_created or self._session_is_alive():
+            self._destroy_model_state()
+
+        self.project_file_edit.clear()
+        self.output_dir_edit.clear()
+        self._settings_xml_tree = None
+        self._settings_xml_path = None
+        self._known_species_codes = []
+        self.workflow_log_output.clear()
+        self._workflow_log_full_backup = ""
+        self.log_filter_clear_button.setEnabled(False)
+        self._set_current_year_display(0)
+        self.model_status_label.setText("Model status: idle")
+        self._set_model_progress_state("idle")
+        self._refresh_species_controls()
+        self._refresh_runtime_compatibility_panel()
+        self._update_run_controls_state()
+        self.status_label.setText("iLAND Workbench reset for new QGIS project.")
+
+    def _save_current_qgis_project(self, mode: str) -> bool:
+        if self.iface is None or QgsProject is None:
+            return False
+
+        project = QgsProject.instance()
+        if mode == "save":
+            if hasattr(self.iface, "actionSaveProject") and callable(self.iface.actionSaveProject):
+                action = self.iface.actionSaveProject()
+                if action is not None:
+                    action.trigger()
+            elif project.fileName():
+                project.write(project.fileName())
+            else:
+                return self._save_current_qgis_project(mode="save_as")
+        elif mode == "save_as":
+            if hasattr(self.iface, "actionSaveProjectAs") and callable(self.iface.actionSaveProjectAs):
+                action = self.iface.actionSaveProjectAs()
+                if action is not None:
+                    action.trigger()
+            else:
+                file_path, _ = QFileDialog.getSaveFileName(
+                    self,
+                    "Save QGIS project as",
+                    str(self._default_user_workspace_dir()),
+                    "QGIS project (*.qgz *.qgs)",
+                )
+                if not file_path:
+                    return False
+                return bool(project.write(file_path))
+        else:
+            return False
+
+        if project.fileName() and not project.isDirty():
+            return True
+        return False
+
     def _browse_output_dir(self):
-        start_dir = self.output_dir_edit.text().strip() or str(self.repo_root / "output")
+        resolved = self._resolve_effective_output_dir(create=False)
+        start_dir = str(resolved) if resolved is not None else str(self._default_user_workspace_dir())
         folder = QFileDialog.getExistingDirectory(self, "Select output directory", start_dir)
         if folder:
             self.output_dir_edit.setText(folder)
+
+    def _default_user_workspace_dir(self) -> Path:
+        documents = Path.home() / "Documents"
+        if documents.exists():
+            return documents
+        return Path.home()
+
+    def _resolve_effective_output_dir(self, create: bool = False) -> Optional[Path]:
+        raw_override = self.output_dir_edit.text().strip()
+        project_file = self.project_file_edit.text().strip()
+
+        project_home: Optional[Path] = None
+        project_output_setting = "output"
+
+        if project_file:
+            xml_path = Path(project_file)
+            if xml_path.exists() and xml_path.is_file():
+                project_home = xml_path.resolve().parent
+                try:
+                    root = ET.parse(xml_path).getroot()
+                    home_node = root.find("./system/path/home")
+                    if home_node is not None and (home_node.text or "").strip():
+                        home_text = (home_node.text or "").strip()
+                        candidate_home = Path(home_text)
+                        if not candidate_home.is_absolute():
+                            candidate_home = (project_home / candidate_home)
+                        project_home = candidate_home.resolve()
+
+                    output_node = root.find("./system/path/output")
+                    if output_node is not None and (output_node.text or "").strip():
+                        project_output_setting = (output_node.text or "").strip()
+                except (ET.ParseError, OSError, ValueError):
+                    pass
+
+        if raw_override:
+            candidate = Path(raw_override).expanduser()
+            if not candidate.is_absolute():
+                base = project_home or self._default_user_workspace_dir()
+                candidate = base / candidate
+            resolved = candidate.resolve()
+        else:
+            base = project_home or self._default_user_workspace_dir()
+            output_candidate = Path(project_output_setting).expanduser()
+            if output_candidate.is_absolute():
+                resolved = output_candidate.resolve()
+            else:
+                resolved = (base / output_candidate).resolve()
+
+        if create:
+            resolved.mkdir(parents=True, exist_ok=True)
+        return resolved
 
     def _set_button_icon(self, button: QPushButton, icon_name: str):
         icon_path = self.plugin_dir / "res" / icon_name
@@ -2129,6 +2355,14 @@ class ILandDockWidget(QDockWidget):
             self._update_run_controls_state()
             return
 
+        if not self._run_landscape_preflight_validation(project_file):
+            self._update_run_controls_state()
+            return
+
+        effective_output = self._resolve_effective_output_dir(create=True)
+        if effective_output is not None and not self.output_dir_edit.text().strip():
+            self._append_workflow_log(f"Using project output directory: {effective_output}")
+
         if not self._ensure_session(project_file):
             if self._legacy_cli_executable:
                 self._append_workflow_log(
@@ -2166,6 +2400,44 @@ class ILandDockWidget(QDockWidget):
         self.status_label.setText("Model created. Ready to run.")
         self._append_workflow_log("Create Model completed successfully using persistent session backend.")
         self._update_run_controls_state()
+
+    def _run_landscape_preflight_validation(self, project_file: str) -> bool:
+        validator = ILandLandscapeValidator(project_file)
+        report = validator.validate()
+
+        self._append_workflow_log(f"Landscape pre-flight: {report.summary()}")
+        if report.issues:
+            for line in report.issues_text().splitlines()[:80]:
+                self._append_workflow_log(line)
+
+        if report.has_blockers:
+            blocker_text = report.issues_text({"BLOCK"})
+            QMessageBox.warning(
+                self,
+                "Missing mandatory initial landscape components",
+                "Create Model is blocked because required iLAND landscape inputs are missing.\n\n"
+                f"{blocker_text}",
+            )
+            self.status_label.setText("Create Model blocked by missing mandatory landscape components.")
+            self.model_status_label.setText("Model status: validation blocked")
+            self._set_model_progress_state("failed")
+            return False
+
+        if report.warning_count > 0:
+            warning_text = report.issues_text({"WARN"})
+            reply = QMessageBox.question(
+                self,
+                "Landscape validation warnings",
+                "Landscape validation found warnings. You can continue, but results may be unreliable.\n\n"
+                f"{warning_text}\n\nProceed with Create Model?",
+                MSGBOX_YES | MSGBOX_NO,
+                MSGBOX_NO,
+            )
+            if reply != MSGBOX_YES:
+                self.status_label.setText("Create Model canceled after validation warnings.")
+                return False
+
+        return True
 
     def _selected_species_code(self) -> str:
         if not hasattr(self, "visual_species_combo"):
@@ -3001,9 +3273,10 @@ class ILandDockWidget(QDockWidget):
         self._update_run_controls_state()
 
     def _open_output_folder(self):
-        output_dir = self.output_dir_edit.text().strip() or str(self.repo_root / "output")
-        path = Path(output_dir)
-        path.mkdir(parents=True, exist_ok=True)
+        path = self._resolve_effective_output_dir(create=True)
+        if path is None:
+            self.status_label.setText("Output directory is not available.")
+            return
         try:
             if os.name == "nt":
                 os.startfile(str(path))  # type: ignore[attr-defined]
@@ -3019,7 +3292,11 @@ class ILandDockWidget(QDockWidget):
             self._append_workflow_log("Load layer skipped: QGIS APIs unavailable.")
             return
 
-        output_dir = Path(self.output_dir_edit.text().strip() or str(self.repo_root / "output"))
+        resolved = self._resolve_effective_output_dir(create=False)
+        if resolved is None:
+            self.status_label.setText("Output directory is not available.")
+            return
+        output_dir = resolved
         if not output_dir.exists():
             self.status_label.setText("Output directory does not exist.")
             self._append_workflow_log(f"Load layer failed: output directory not found: {output_dir}")

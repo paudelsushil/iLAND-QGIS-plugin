@@ -12,6 +12,21 @@ Dockable QGIS plugin that surfaces iLAND modules and submodules directly from th
 
 Maintainer: Sushil Paudel
 
+## Release Notes
+
+### v4.0.0 (on top of 3.0.2)
+
+This major update expands iLAND Workbench from metadata/runtime utilities into a full data-preparation workflow layer for climate, soil, and stand-grid inputs.
+
+- Added complete climate workflows: Future Climate download, Historical Climate Data with manifest-first outputs, and improved climate conversion/validation pipeline integration.
+- Added new soil workflow: Soil Data Download with SSURGO (default) and SoilGrids (global), including source-specific variable/depth selection.
+- Added separate stand-grid source workflow: LANDFIRE EVT (default, API) plus global ESA WorldCover option with time-period handling.
+- Improved reliability for long-running tasks: stronger cancellation handling, partial-file cleanup, and richer transfer telemetry (MB, %, MB/s).
+- Improved project UX: integrated Create Project from workflow UI, safer new-project reset behavior, and better output directory resolution.
+- Added landscape pre-flight validation before model creation to block missing mandatory inputs and surface warnings earlier.
+- Expanded Processing Provider coverage so new workflows are directly available in QGIS Processing toolbox.
+- Added QGIS 4 startup stability hardening for plugin UI/action lifecycle during initialization.
+
 ## Plugin Guide
 
 For a complete hands-on walkthrough of all tabs, menus, and workflows, see the plugin guide:
@@ -96,7 +111,7 @@ Suggested citation text for the core model in derivative tool documentation:
                    hassle-free installation and reproducible analysis 
                    workflows}},
   year         = {2026},
-  version      = {3.0.0},
+  version      = {4.0.0},
   publisher    = {Zenodo},
   doi          = {10.5281/zenodo.19300115},
   url          = {https://doi.org/10.5281/zenodo.19300115}
