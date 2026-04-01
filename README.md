@@ -91,18 +91,24 @@ Suggested citation text for the core model in derivative tool documentation:
 
 ## Plugin Structure
 
-- `__init__.py`: QGIS plugin entry point (`classFactory`).
-- `metadata.txt`: QGIS repository metadata.
-- `iland_qgis_plugin.py`: plugin lifecycle and dock integration.
-- `iland_dock_widget.py`: docked multi-tab iLAND workbench UI.
-- `iland_ui_catalog.py`: extraction of dock/action/settings catalogs from iLAND source files.
-- `module_registry.py`: iLAND module/submodule discovery logic.
-- `runtime_manager.py`: local runtime inventory, release download, install, and activation helpers.
-- `config_manager.py`: persistent plugin settings for iLAND root path and GitHub repository.
-- `package_plugin.ps1`: creates a slim QGIS plugin ZIP package under `dist/`.
-- `i18n/`: translation source files (`.pro`, `.ts`) for plugin localization workflow.
-- `help/index.html`: bundled local plugin help page.
-- `icon.svg`: plugin icon.
+Main processing tools (menu order in QGIS Processing > iLAND Workbench):
+
+1. List iLAND modules
+2. Build iLAND run command
+3. Get latest iLAND release info
+4. Validate existing iLand climate database
+5. Future Climate
+6. Historical Climate Data
+7. Validate daily climate NetCDF for iLand
+8. Build iLand climate database from daily NetCDF
+9. Build iLand climate from WorldClim/CMIP6 GeoTIFF
+10. Process disturbance history for iLand
+11. Generate field data CSV templates
+12. Download stand-grid source data
+13. Build iLand landscape from plot data
+14. Create iLAND project
+15. Soil Data Download
+
 
 ## Citation:
 @software{paudel2026iland,
