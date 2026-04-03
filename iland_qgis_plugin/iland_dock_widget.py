@@ -28,6 +28,7 @@ import shutil
 import shlex
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime
@@ -705,8 +706,14 @@ class ILandDockWidget(QDockWidget):
         button_row = QHBoxLayout()
         self.runtime_check_button = QPushButton("Check Latest")
         self.runtime_check_button.clicked.connect(self._on_check_latest_release)
-        self.runtime_install_button = QPushButton("Install Latest (Windows)")
+        install_label = "Install Latest (Windows)" if os.name == "nt" else "Install Latest (Windows-only)"
+        self.runtime_install_button = QPushButton(install_label)
         self.runtime_install_button.clicked.connect(self._on_install_latest_runtime)
+        if os.name != "nt":
+            self.runtime_install_button.setEnabled(False)
+            self.runtime_install_button.setToolTip(
+                "Automatic runtime install is currently supported on Windows only."
+            )
         self.runtime_refresh_button = QPushButton("Refresh Local")
         self.runtime_refresh_button.clicked.connect(self._refresh_runtime_local_list)
         button_row.addWidget(self.runtime_check_button)
@@ -724,6 +731,8 @@ class ILandDockWidget(QDockWidget):
 
         self.runtime_activate_button = QPushButton("Activate Selected Runtime")
         self.runtime_activate_button.clicked.connect(self._on_activate_runtime)
+        self.runtime_add_local_button = QPushButton("Add Local Runtime...")
+        self.runtime_add_local_button.clicked.connect(self._on_add_local_runtime)
 
         self.runtime_compat_refresh_button = QPushButton("Refresh Compatibility Check")
         self.runtime_compat_refresh_button.clicked.connect(self._refresh_runtime_compatibility_panel)
@@ -749,6 +758,7 @@ class ILandDockWidget(QDockWidget):
         layout.addWidget(QLabel("Installed Runtimes"))
         layout.addWidget(self.runtime_local_list)
         layout.addWidget(self.runtime_activate_button)
+        layout.addWidget(self.runtime_add_local_button)
         layout.addWidget(self.runtime_compat_refresh_button)
         layout.addWidget(self.runtime_compat_tree)
         layout.addWidget(self.runtime_compat_summary)
@@ -2173,22 +2183,29 @@ class ILandDockWidget(QDockWidget):
     def _resolve_or_install_executable(self) -> Optional[Path]:
         executable = self._resolve_executable_path()
         if executable is None:
-            self._append_workflow_log("Executable missing. Attempting runtime auto-install...")
-            try:
-                repo = self.config.get_github_repo()
-                info = self.runtime_manager.install_latest_windows_runtime(repo=repo)
-                installed_exe = str(info.get("executable", ""))
-                if installed_exe:
-                    self.config.set_string("workflow_executable_path", installed_exe)
-                    self._append_workflow_log(f"Runtime installed. Executable: {installed_exe}")
-                executable = self._resolve_executable_path()
-            except Exception as exc:
-                self._append_workflow_log(f"Runtime auto-install failed: {exc}")
+            if os.name == "nt":
+                self._append_workflow_log("Executable missing. Attempting runtime auto-install...")
+                try:
+                    repo = self.config.get_github_repo()
+                    info = self.runtime_manager.install_latest_windows_runtime(repo=repo)
+                    installed_exe = str(info.get("executable", ""))
+                    if installed_exe:
+                        self.config.set_string("workflow_executable_path", installed_exe)
+                        self._append_workflow_log(f"Runtime installed. Executable: {installed_exe}")
+                    executable = self._resolve_executable_path()
+                except Exception as exc:
+                    self._append_workflow_log(f"Runtime auto-install failed: {exc}")
+            else:
+                self._append_workflow_log(
+                    "Executable missing. Auto-install is Windows-only; provide native iLANDc via system PATH, project/runtime folders, or Runtime tab -> Add Local Runtime...."
+                )
 
         if executable is None:
             self.model_status_label.setText("Model status: missing executable")
             self._set_model_progress_state("failed")
-            self.status_label.setText("iLANDc runtime not found. Check Runtime tab to install/activate one.")
+            self.status_label.setText(
+                "iLANDc runtime not found. Ensure 'ilandc' is available in PATH or configure a local runtime in Runtime tab."
+            )
             self._append_workflow_log("Run blocked: executable not found after runtime auto-install attempt.")
             return None
 
@@ -2196,11 +2213,28 @@ class ILandDockWidget(QDockWidget):
         if "ilandc" not in Path(executable_str).name.lower():
             self.model_status_label.setText("Model status: invalid executable")
             self._set_model_progress_state("failed")
-            self.status_label.setText("Selected executable is not iLANDc.exe. Headless console engine is required.")
+            self.status_label.setText("Selected executable is not iLANDc. Headless console engine is required.")
             self._append_workflow_log(
-                f"Run blocked: '{executable_str}' appears to be GUI app. Please select iLANDc.exe."
+                f"Run blocked: '{executable_str}' appears to be GUI app. Please select iLANDc console executable."
             )
             return None
+
+        if os.name != "nt" and Path(executable_str).suffix.lower() == ".exe":
+            self.model_status_label.setText("Model status: invalid executable")
+            self._set_model_progress_state("failed")
+            self.status_label.setText("Windows runtime (.exe) cannot run on this OS. Select native iLANDc binary.")
+            self._append_workflow_log(
+                f"Run blocked: '{executable_str}' is a Windows .exe. Configure native iLANDc for this platform."
+            )
+            return None
+
+        if os.name != "nt":
+            try:
+                mode = executable.stat().st_mode
+                if not (mode & 0o111):
+                    executable.chmod(mode | 0o111)
+            except Exception:
+                pass
         return executable
 
     def _runtime_env_for_executable(self, executable: Path) -> Dict[str, str]:
@@ -2355,6 +2389,10 @@ class ILandDockWidget(QDockWidget):
             self._update_run_controls_state()
             return
 
+        if not self._ensure_qgis_project_context_for_xml(project_file):
+            self._update_run_controls_state()
+            return
+
         if not self._run_landscape_preflight_validation(project_file):
             self._update_run_controls_state()
             return
@@ -2437,6 +2475,74 @@ class ILandDockWidget(QDockWidget):
                 self.status_label.setText("Create Model canceled after validation warnings.")
                 return False
 
+        return True
+
+    def _find_qgis_project_files(self, folder: Path) -> List[Path]:
+        if not folder.exists() or not folder.is_dir():
+            return []
+        files: List[Path] = []
+        for pattern in ("*.qgz", "*.qgs"):
+            files.extend(p for p in folder.glob(pattern) if p.is_file())
+        return sorted(files)
+
+    def _ensure_qgis_project_context_for_xml(self, project_file: str) -> bool:
+        if self.iface is None or QgsProject is None:
+            return True
+
+        project = QgsProject.instance()
+        current_project_path = str(project.fileName() or "").strip()
+        if current_project_path:
+            return True
+
+        xml_path = Path(project_file)
+        try:
+            xml_dir = xml_path.resolve().parent
+        except Exception:
+            xml_dir = xml_path.parent
+
+        existing_qgis_projects = self._find_qgis_project_files(xml_dir)
+        if existing_qgis_projects:
+            self._append_workflow_log(
+                f"Found {len(existing_qgis_projects)} existing QGIS project file(s) in XML folder; continuing."
+            )
+            return True
+
+        reply = QMessageBox.question(
+            self,
+            "Save QGIS project",
+            "No QGIS project was found in the XML folder, and your current QGIS project is still untitled.\n\n"
+            "Do you want to save a QGIS project in this folder before Create Model continues?",
+            MSGBOX_YES | MSGBOX_NO,
+            MSGBOX_YES,
+        )
+        if reply != MSGBOX_YES:
+            self._append_workflow_log("Create Model: continuing without saving a QGIS project.")
+            return True
+
+        default_target = xml_dir / f"{xml_path.stem}.qgz"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save QGIS project as",
+            str(default_target),
+            "QGIS project (*.qgz *.qgs)",
+        )
+        if not file_path:
+            self._append_workflow_log("Create Model: QGIS save prompt canceled; continuing.")
+            return True
+
+        chosen_path = Path(file_path)
+        if chosen_path.suffix.lower() not in {".qgz", ".qgs"}:
+            chosen_path = chosen_path.with_suffix(".qgz")
+
+        if not project.write(str(chosen_path)):
+            QMessageBox.warning(
+                self,
+                "QGIS project not saved",
+                "Could not save the QGIS project file. Create Model will continue with the current untitled project.",
+            )
+            return True
+
+        self._append_workflow_log(f"Saved QGIS project: {chosen_path}")
         return True
 
     def _selected_species_code(self) -> str:
@@ -2535,42 +2641,253 @@ class ILandDockWidget(QDockWidget):
 
     def _resolve_executable_path(self) -> Optional[Path]:
         def is_ilandc(path: Path) -> bool:
-            return path.name.lower() == "ilandc.exe"
+            name = path.name.lower()
+            if os.name == "nt":
+                return name == "ilandc.exe"
+            if name == "ilandc":
+                return True
+            return name.startswith("ilandc") and not name.endswith(".exe")
 
-        from_runtime = self.runtime_manager.get_active_executable()
-        if from_runtime is not None and from_runtime.exists() and is_ilandc(from_runtime):
-            return from_runtime
+        def first_valid(candidates: List[Path]) -> Optional[Path]:
+            for candidate in candidates:
+                if candidate.exists() and candidate.is_file() and is_ilandc(candidate):
+                    return candidate
+            return None
+
+        def expand_candidate(path: Path) -> List[Path]:
+            candidates: List[Path] = []
+            if path.exists() and path.is_file():
+                candidates.append(path)
+                return candidates
+            if not path.exists() or not path.is_dir():
+                return candidates
+
+            base_names = ["iLANDc.exe", "iLANDc", "ilandc"]
+            for name in base_names:
+                candidates.append(path / name)
+
+            if path.suffix.lower() == ".app":
+                macos_dir = path / "Contents" / "MacOS"
+                for name in ["iLANDc", "ilandc"]:
+                    candidates.append(macos_dir / name)
+
+            for root_name in ["runtime", "runtimes", "bin", "dist", "release", "x64", "Contents", "MacOS"]:
+                root = path / root_name
+                if not root.exists() or not root.is_dir():
+                    continue
+                candidates.extend(list(root.rglob("iLANDc.exe")))
+                candidates.extend(list(root.rglob("iLANDc")))
+                candidates.extend(list(root.rglob("ilandc")))
+
+            return candidates
+
+        platform_key = "windows" if os.name == "nt" else ("macos" if sys.platform == "darwin" else "linux")
+
+        # Prefer system/runtime-independent discovery first so global ilandc works without plugin runtime setup.
+        for candidate_name in ["iLANDc.exe", "iLANDc", "ilandc"]:
+            which_path = shutil.which(candidate_name)
+            if which_path:
+                which_candidate = Path(which_path)
+                if is_ilandc(which_candidate):
+                    return which_candidate
 
         saved = self.config.get_string("workflow_executable_path", "")
         if saved:
             saved_path = Path(saved)
-            if saved_path.exists() and saved_path.is_file() and is_ilandc(saved_path):
-                return saved_path
+            found = first_valid(expand_candidate(saved_path))
+            if found is not None:
+                return found
+
+            # Allow command-style saved values like "ilandc" that resolve via PATH.
+            if os.sep not in saved and "/" not in saved and "\\" not in saved:
+                which_path = shutil.which(saved)
+                if which_path:
+                    which_candidate = Path(which_path)
+                    if is_ilandc(which_candidate):
+                        return which_candidate
+
+        bundled_candidates = [
+            self.plugin_dir / "iLANDc.exe",
+            self.plugin_dir / "iLANDc",
+            self.plugin_dir / "ilandc",
+            self.plugin_dir / "runtime" / "iLANDc.exe",
+            self.plugin_dir / "runtime" / "iLANDc",
+            self.plugin_dir / "runtime" / "ilandc",
+            self.plugin_dir / "runtime" / platform_key / "iLANDc.exe",
+            self.plugin_dir / "runtime" / platform_key / "iLANDc",
+            self.plugin_dir / "runtime" / platform_key / "ilandc",
+            self.plugin_dir / "runtimes" / "iLANDc.exe",
+            self.plugin_dir / "runtimes" / "iLANDc",
+            self.plugin_dir / "runtimes" / "ilandc",
+            self.plugin_dir / "runtimes" / platform_key / "iLANDc.exe",
+            self.plugin_dir / "runtimes" / platform_key / "iLANDc",
+            self.plugin_dir / "runtimes" / platform_key / "ilandc",
+            self.plugin_dir / "bin" / "iLANDc.exe",
+            self.plugin_dir / "bin" / "iLANDc",
+            self.plugin_dir / "bin" / "ilandc",
+        ]
+        found = first_valid(bundled_candidates)
+        if found is not None:
+            return found
+
+        for root_name in ["runtime", "runtimes", "bin", "dist", "release", "x64"]:
+            root = self.plugin_dir / root_name
+            if not root.exists() or not root.is_dir():
+                continue
+            hits = list(root.rglob("iLANDc.exe")) + list(root.rglob("iLANDc")) + list(root.rglob("ilandc"))
+            found = first_valid(hits)
+            if found is not None:
+                return found
+
+        project_file = self.project_file_edit.text().strip() if hasattr(self, "project_file_edit") else ""
+        if project_file:
+            project_path = Path(project_file).expanduser()
+            if project_path.exists() and project_path.is_file():
+                project_dir = project_path.resolve().parent
+                project_candidates = [
+                    project_dir / "iLANDc.exe",
+                    project_dir / "iLANDc",
+                    project_dir / "ilandc",
+                    project_dir / "runtime" / platform_key / "iLANDc",
+                    project_dir / "runtime" / platform_key / "ilandc",
+                    project_dir / "runtime" / "iLANDc",
+                    project_dir / "runtime" / "ilandc",
+                    project_dir / "runtimes" / platform_key / "iLANDc",
+                    project_dir / "runtimes" / platform_key / "ilandc",
+                    project_dir / "runtimes" / "iLANDc",
+                    project_dir / "runtimes" / "ilandc",
+                    project_dir / "bin" / "iLANDc",
+                    project_dir / "bin" / "ilandc",
+                    project_dir / "build" / "iLANDc",
+                    project_dir / "build" / "ilandc",
+                ]
+                found = first_valid(project_candidates)
+                if found is not None:
+                    return found
+
+                for root_name in ["runtime", "runtimes", "build", "bin", "dist", "release", "x64"]:
+                    root = project_dir / root_name
+                    if not root.exists() or not root.is_dir():
+                        continue
+                    hits = list(root.rglob("iLANDc.exe")) + list(root.rglob("iLANDc")) + list(root.rglob("ilandc"))
+                    found = first_valid(hits)
+                    if found is not None:
+                        return found
 
         common_candidates = [
             self.repo_root / "iLANDc.exe",
             self.repo_root / "build" / "iLANDc.exe",
             self.repo_root / "bin" / "iLANDc.exe",
+            self.repo_root / "iLANDc",
+            self.repo_root / "build" / "iLANDc",
+            self.repo_root / "bin" / "iLANDc",
         ]
-        for candidate in common_candidates:
-            if candidate.exists() and candidate.is_file() and is_ilandc(candidate):
-                return candidate
+        found = first_valid(common_candidates)
+        if found is not None:
+            return found
+
+        from_runtime = self.runtime_manager.get_active_executable()
+        if from_runtime is not None and from_runtime.exists() and is_ilandc(from_runtime):
+            return from_runtime
+
+        if sys.platform == "darwin":
+            mac_default_candidates: List[Path] = [
+                Path("/Applications/iLand.app/Contents/MacOS/iLANDc"),
+                Path("/Applications/iLand.app/Contents/MacOS/ilandc"),
+                Path("/Applications/iland.app/Contents/MacOS/iLANDc"),
+                Path("/Applications/iland.app/Contents/MacOS/ilandc"),
+                Path.home() / "Applications" / "iLand.app" / "Contents" / "MacOS" / "iLANDc",
+                Path.home() / "Applications" / "iLand.app" / "Contents" / "MacOS" / "ilandc",
+            ]
+            applications_dir = Path("/Applications")
+            if applications_dir.exists() and applications_dir.is_dir():
+                for app in applications_dir.glob("*.app"):
+                    mac_default_candidates.append(app / "Contents" / "MacOS" / "iLANDc")
+                    mac_default_candidates.append(app / "Contents" / "MacOS" / "ilandc")
+            found = first_valid(mac_default_candidates)
+            if found is not None:
+                return found
+
+        if os.name != "nt" and sys.platform != "darwin":
+            linux_default_candidates = [
+                Path("/usr/local/bin/iLANDc"),
+                Path("/usr/local/bin/ilandc"),
+                Path("/usr/bin/iLANDc"),
+                Path("/usr/bin/ilandc"),
+                Path("/opt/iland/iLANDc"),
+                Path("/opt/iland/ilandc"),
+                Path("/opt/iLand/iLANDc"),
+                Path("/opt/iLand/ilandc"),
+            ]
+            found = first_valid(linux_default_candidates)
+            if found is not None:
+                return found
 
         for root_name in ["build", "bin", "dist", "release", "x64"]:
             root = self.repo_root / root_name
             if not root.exists():
                 continue
-            hits = list(root.rglob("iLANDc.exe"))
-            if hits:
-                return hits[0]
-
-        which_path = shutil.which("iLANDc.exe")
-        if which_path:
-            which_candidate = Path(which_path)
-            if is_ilandc(which_candidate):
-                return which_candidate
+            hits = list(root.rglob("iLANDc.exe")) + list(root.rglob("iLANDc")) + list(root.rglob("ilandc"))
+            found = first_valid(hits)
+            if found is not None:
+                return found
 
         return None
+
+    def _on_add_local_runtime(self):
+        if os.name == "nt":
+            file_filter = "Executables (iLANDc.exe);;All files (*)"
+        else:
+            file_filter = "Executables (iLANDc ilandc);;All files (*)"
+
+        start_dir = str(self._default_user_workspace_dir())
+        current = self.config.get_string("workflow_executable_path", "").strip()
+        if current:
+            current_path = Path(current).expanduser()
+            if current_path.exists():
+                start_dir = str(current_path.parent if current_path.is_file() else current_path)
+
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select native iLANDc executable",
+            start_dir,
+            file_filter,
+        )
+        if not selected:
+            return
+
+        executable = Path(selected).expanduser()
+        if not executable.exists() or not executable.is_file():
+            self.runtime_status_label.setText(f"Selected executable does not exist: {selected}")
+            return
+
+        name_lower = executable.name.lower()
+        if "ilandc" not in name_lower:
+            self.runtime_status_label.setText("Selected file is not iLANDc. Choose headless console executable.")
+            return
+
+        if os.name != "nt" and executable.suffix.lower() == ".exe":
+            self.runtime_status_label.setText("Windows .exe cannot run on this OS. Choose native iLANDc binary.")
+            return
+
+        if os.name != "nt":
+            try:
+                mode = executable.stat().st_mode
+                if not (mode & 0o111):
+                    executable.chmod(mode | 0o111)
+            except OSError:
+                pass
+
+        tag = f"local-{executable.parent.name}-{executable.name}"
+        try:
+            info = self.runtime_manager.register_local_runtime(executable=executable, tag=tag, activate=True)
+            self.config.set_string("workflow_executable_path", str(executable.resolve()))
+            self._refresh_runtime_local_list()
+            self.runtime_status_label.setText(
+                f"Registered local runtime {info.get('tag', '?')} ({Path(info.get('executable', '')).name})."
+            )
+        except Exception as exc:
+            self.runtime_status_label.setText(f"Could not register local runtime: {exc}")
 
     def _on_log_filter_execute(self):
         search_for = self.log_filter_edit.text().strip()
@@ -2634,6 +2951,12 @@ class ILandDockWidget(QDockWidget):
             self.runtime_status_label.setText(f"Could not fetch latest release: {exc}")
 
     def _on_install_latest_runtime(self):
+        if os.name != "nt":
+            self.runtime_status_label.setText(
+                "Automatic runtime install is currently supported on Windows only. "
+                "Select a native iLANDc executable manually."
+            )
+            return
         repo = self.runtime_repo_edit.text().strip() or "edfm-tum/iland-model"
         self.config.set_github_repo(repo)
         try:

@@ -69,6 +69,28 @@ class ILandRuntimeManager:
         self._save_index(data)
         return True
 
+    def register_local_runtime(
+        self,
+        executable: Path,
+        tag: Optional[str] = None,
+        activate: bool = True,
+    ) -> Dict[str, str]:
+        exe = Path(executable).expanduser().resolve()
+        if not exe.exists() or not exe.is_file():
+            raise RuntimeError(f"Runtime executable not found: {exe}")
+
+        runtime_tag = (tag or f"local-{exe.stem}").strip() or "local-runtime"
+        runtime_info = {
+            "tag": runtime_tag,
+            "asset_name": "local-manual",
+            "install_dir": str(exe.parent),
+            "executable": str(exe),
+        }
+        self._upsert_runtime(runtime_info)
+        if activate:
+            self.set_active_runtime(runtime_tag)
+        return runtime_info
+
     def fetch_latest_release(self, repo: str = "edfm-tum/iland-model") -> Dict[str, object]:
         url = f"https://api.github.com/repos/{repo}/releases/latest"
         request = urllib.request.Request(

@@ -24,11 +24,13 @@ landscape components that must exist before Create Model is allowed.
 from __future__ import annotations
 
 import csv
+import re
+import shlex
 import sqlite3
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 
 BLOCK = "BLOCK"
@@ -166,6 +168,7 @@ class ILandLandscapeValidator:
             xpath="system.database.climate",
             label="Climate database",
             detail="Provide climate SQLite database with daily weather tables.",
+            base_xpath="system.path.database",
         )
         if climate_path is not None:
             self._validate_climate_database(climate_path)
@@ -175,6 +178,7 @@ class ILandLandscapeValidator:
             xpath="system.database.in",
             label="Species database",
             detail="Provide species SQLite parameter database (system.database.in).",
+            base_xpath="system.path.database",
         )
         if species_path is not None:
             self._validate_species_database(species_path)
@@ -278,25 +282,44 @@ class ILandLandscapeValidator:
         self._home_path = home_path
         self._pass()
 
-    def _resolve_path(self, raw_path: str) -> Path:
+    def _resolve_path(self, raw_path: str, base_xpath: str = "") -> Path:
         path = Path(raw_path)
         if path.is_absolute():
             return path
 
-        if self._home_path is not None:
-            return self._home_path / path
-        if self._project_dir is not None:
-            return self._project_dir / path
-        return path
+        candidates: List[Path] = []
 
-    def _check_required_file(self, category: str, xpath: str, label: str, detail: str) -> Optional[Path]:
+        if base_xpath:
+            base_raw = self._get_xml_text(base_xpath)
+            if base_raw:
+                base_path = Path(base_raw)
+                if not base_path.is_absolute():
+                    if self._home_path is not None:
+                        base_path = self._home_path / base_path
+                    elif self._project_dir is not None:
+                        base_path = self._project_dir / base_path
+                candidates.append(base_path / path)
+
+        if self._home_path is not None:
+            candidates.append(self._home_path / path)
+        if self._project_dir is not None:
+            candidates.append(self._project_dir / path)
+        candidates.append(path)
+
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+
+        return candidates[0]
+
+    def _check_required_file(self, category: str, xpath: str, label: str, detail: str, base_xpath: str = "") -> Optional[Path]:
         self.report.checks_run += 1
         raw_value = self._get_xml_text(xpath)
         if not raw_value:
             self._add(BLOCK, category, f"{label} path is not set ({xpath}).", detail)
             return None
 
-        resolved = self._resolve_path(raw_value)
+        resolved = self._resolve_path(raw_value, base_xpath=base_xpath)
         if not resolved.exists() or not resolved.is_file():
             self._add(BLOCK, category, f"{label} not found: {resolved}", detail)
             return None
@@ -304,7 +327,7 @@ class ILandLandscapeValidator:
         self._pass()
         return resolved
 
-    def _detect_env_delimiter(self, file_path: Path) -> str:
+    def _detect_env_delimiter(self, file_path: Path) -> Optional[str]:
         try:
             with file_path.open("r", encoding="utf-8") as handle:
                 first_line = handle.readline()
@@ -314,35 +337,91 @@ class ILandLandscapeValidator:
             return "\t"
         if ";" in first_line:
             return ";"
-        return ","
+        if "," in first_line:
+            return ","
+        return None
+
+    def _clean_env_token(self, token: str) -> str:
+        text = (token or "").strip().lstrip("\ufeff")
+        if len(text) >= 2 and ((text[0] == '"' and text[-1] == '"') or (text[0] == "'" and text[-1] == "'")):
+            text = text[1:-1].strip()
+        return text
+
+    def _load_environment_rows(self, env_path: Path) -> Tuple[Dict[str, str], List[Dict[str, str]]]:
+        """Load environment file rows from delimited or whitespace-separated text."""
+        with env_path.open("r", encoding="utf-8") as handle:
+            lines = [line.strip() for line in handle if line.strip() and not line.lstrip().startswith("#")]
+
+        if not lines:
+            return {}, []
+
+        delimiter = self._detect_env_delimiter(env_path)
+        if delimiter is not None:
+            reader = csv.reader(lines, delimiter=delimiter, skipinitialspace=True)
+            try:
+                header_raw = next(reader)
+            except StopIteration:
+                return {}, []
+
+            header_tokens = [self._clean_env_token(h) for h in header_raw]
+            headers = {h.lower().strip(): h for h in header_tokens if h}
+            rows: List[Dict[str, str]] = []
+
+            for raw_values in reader:
+                values = [self._clean_env_token(v) for v in raw_values]
+                if not any(values):
+                    continue
+                if len(values) < len(header_tokens):
+                    values.extend([""] * (len(header_tokens) - len(values)))
+                elif len(values) > len(header_tokens):
+                    values = values[: len(header_tokens) - 1] + [" ".join(values[len(header_tokens) - 1 :])]
+                rows.append(dict(zip(header_tokens, values)))
+            return headers, rows
+
+        try:
+            header_tokens = [self._clean_env_token(t) for t in shlex.split(lines[0])]
+        except ValueError:
+            header_tokens = [self._clean_env_token(t) for t in re.split(r"\s+", lines[0])]
+
+        headers = {h.lower().strip(): h for h in header_tokens if h}
+        rows: List[Dict[str, str]] = []
+
+        for line in lines[1:]:
+            try:
+                values = [self._clean_env_token(v) for v in shlex.split(line)]
+            except ValueError:
+                values = [self._clean_env_token(v) for v in re.split(r"\s+", line)]
+            if len(values) < len(header_tokens):
+                values.extend([""] * (len(header_tokens) - len(values)))
+            elif len(values) > len(header_tokens):
+                values = values[: len(header_tokens) - 1] + [" ".join(values[len(header_tokens) - 1 :])]
+            rows.append(dict(zip(header_tokens, values)))
+
+        return headers, rows
 
     def _validate_environment_file(self, env_path: Path):
         self.report.checks_run += 1
         try:
-            delimiter = self._detect_env_delimiter(env_path)
-            with env_path.open("r", encoding="utf-8") as handle:
-                reader = csv.DictReader(handle, delimiter=delimiter)
-                headers = {h.lower().strip(): h for h in (reader.fieldnames or [])}
-                if "id" not in headers:
-                    self._add(
-                        BLOCK,
-                        "Environment",
-                        "Environment file is missing 'id' column.",
-                        "Add id column matching resource unit IDs in environment grid.",
-                    )
-                    return
+            headers, rows = self._load_environment_rows(env_path)
+            if "id" not in headers:
+                self._add(
+                    BLOCK,
+                    "Environment",
+                    "Environment file is missing 'id' column.",
+                    "Add id column matching resource unit IDs in environment grid.",
+                )
+                return
 
-                rows = list(reader)
-                if not rows:
-                    self._add(
-                        BLOCK,
-                        "Environment",
-                        "Environment file has no data rows.",
-                        "Add one row per resource unit.",
-                    )
-                    return
+            if not rows:
+                self._add(
+                    BLOCK,
+                    "Environment",
+                    "Environment file has no data rows.",
+                    "Add one row per resource unit.",
+                )
+                return
 
-                self._pass()
+            self._pass()
         except OSError as exc:
             self._add(BLOCK, "Environment", f"Cannot read environment file: {exc}")
 
@@ -438,36 +517,48 @@ class ILandLandscapeValidator:
             db_tables = {row[0] for row in cur.fetchall()}
             con.close()
 
-            delimiter = self._detect_env_delimiter(env_path)
-            with env_path.open("r", encoding="utf-8") as handle:
-                reader = csv.DictReader(handle, delimiter=delimiter)
-                headers = {h.lower().strip(): h for h in (reader.fieldnames or [])}
-                table_col = headers.get("model.climate.tablename") or headers.get("tablename")
-                if not table_col:
-                    self._add(
-                        WARN,
-                        "Environment",
-                        "No climate table column found in environment file.",
-                        "Add model.climate.tableName column or configure XML defaults.",
-                    )
-                    return
+            headers, rows = self._load_environment_rows(env_path)
+            table_col = headers.get("model.climate.tablename") or headers.get("tablename")
+            if not table_col:
+                self._add(
+                    WARN,
+                    "Environment",
+                    "No climate table column found in environment file.",
+                    "Add model.climate.tableName column or configure XML defaults.",
+                )
+                return
 
-                referenced = set()
-                for row in reader:
-                    value = (row.get(table_col, "") or "").strip()
-                    if value:
-                        referenced.add(value)
+            referenced = set()
+            for row in rows:
+                value = (row.get(table_col, "") or "").strip()
+                if value:
+                    referenced.add(value)
 
             missing = referenced - db_tables
             if missing:
+                matched = referenced & db_tables
                 sample = sorted(missing)[:5]
                 suffix = f" (and {len(missing) - 5} more)" if len(missing) > 5 else ""
-                self._add(
-                    BLOCK,
-                    "Climate",
-                    f"Environment references missing climate table(s): {sample}{suffix}",
-                    "Ensure each model.climate.tableName value exists in climate database.",
-                )
+                if not matched:
+                    self._add(
+                        BLOCK,
+                        "Climate",
+                        f"Environment references missing climate table(s): {sample}{suffix}",
+                        "Ensure each model.climate.tableName value exists in climate database.",
+                    )
+                else:
+                    self._add(
+                        WARN,
+                        "Climate",
+                        (
+                            f"Environment references {len(missing)} climate table(s) missing in database; "
+                            f"sample: {sample}{suffix}"
+                        ),
+                        (
+                            "Climate table coverage is partial. Original iLAND projects may still run depending "
+                            "on actual runtime table usage, but review mappings if simulation fails."
+                        ),
+                    )
                 return
 
             self._pass()

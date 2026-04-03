@@ -128,13 +128,51 @@ class iLandWorkbenchPlugin:
             self.dock_widget.setAllowedAreas(
                 Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
             )
-            self.iface.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock_widget)
+            self._add_or_tabify_dock_widget(self.dock_widget)
         else:
             self.dock_widget.set_repo_root(self.repo_root)
 
         self.dock_widget.refresh_modules()
         self.dock_widget.show()
         self.dock_widget.raise_()
+
+    def _add_or_tabify_dock_widget(self, new_dock):
+        """Add dock in right area and tabify with an existing visible dock when possible."""
+        main_window = self.iface.mainWindow()
+        preferred_area = Qt.DockWidgetArea.RightDockWidgetArea
+        target_dock = None
+
+        for dock in main_window.findChildren(QDockWidget):
+            if dock is None or dock is new_dock or not dock.isVisible():
+                continue
+            if dock.objectName() == self.DOCK_OBJECT_NAME:
+                continue
+
+            try:
+                dock_area = main_window.dockWidgetArea(dock)
+            except (AttributeError, RuntimeError, TypeError):
+                continue
+
+            if dock_area not in (
+                Qt.DockWidgetArea.LeftDockWidgetArea,
+                Qt.DockWidgetArea.RightDockWidgetArea,
+            ):
+                continue
+
+            preferred_area = dock_area
+            target_dock = dock
+
+            dock_label = f"{dock.objectName()} {dock.windowTitle()}".lower()
+            if "processing" in dock_label or "browser" in dock_label:
+                break
+
+        self.iface.addDockWidget(preferred_area, new_dock)
+
+        if target_dock is not None:
+            try:
+                main_window.tabifyDockWidget(target_dock, new_dock)
+            except (AttributeError, RuntimeError, TypeError):
+                pass
 
     def _register_processing_provider(self):
         try:
