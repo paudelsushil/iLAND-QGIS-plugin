@@ -2199,6 +2199,11 @@ class ILandDockWidget(QDockWidget):
                 self._append_workflow_log(
                     "Executable missing. Auto-install is Windows-only; provide native iLANDc via system PATH, project/runtime folders, or Runtime tab -> Add Local Runtime...."
                 )
+                hints = self._runtime_resolution_hints()
+                if hints:
+                    self._append_workflow_log("Native runtime search hints:")
+                    for hint in hints:
+                        self._append_workflow_log(f"  - {hint}")
 
         if executable is None:
             self.model_status_label.setText("Model status: missing executable")
@@ -2208,6 +2213,12 @@ class ILandDockWidget(QDockWidget):
             )
             self._append_workflow_log("Run blocked: executable not found after runtime auto-install attempt.")
             return None
+
+        # Persist successful runtime resolution so subsequent runs do not depend on repeated discovery.
+        try:
+            self.config.set_string("workflow_executable_path", str(executable.resolve()))
+        except Exception:
+            pass
 
         executable_str = str(executable)
         if "ilandc" not in Path(executable_str).name.lower():
@@ -2236,6 +2247,33 @@ class ILandDockWidget(QDockWidget):
             except Exception:
                 pass
         return executable
+
+    def _runtime_resolution_hints(self) -> List[str]:
+        platform_key = "windows" if os.name == "nt" else ("macos" if sys.platform == "darwin" else "linux")
+        hints: List[str] = []
+
+        saved = self.config.get_string("workflow_executable_path", "").strip()
+        if saved:
+            hints.append(f"Configured workflow executable: {saved}")
+
+        hints.append(f"Plugin runtime folder: {self.plugin_dir / 'runtime' / platform_key}")
+        hints.append(f"Plugin runtimes folder: {self.plugin_dir / 'runtimes' / platform_key}")
+        hints.append(f"Plugin bin folder: {self.plugin_dir / 'bin'}")
+
+        project_file = self.project_file_edit.text().strip() if hasattr(self, "project_file_edit") else ""
+        if project_file:
+            project_path = Path(project_file).expanduser()
+            if project_path.exists() and project_path.is_file():
+                project_dir = project_path.resolve().parent
+                hints.append(f"Project-adjacent runtime folder: {project_dir / 'runtime' / platform_key}")
+                hints.append(f"Project-adjacent bin folder: {project_dir / 'bin'}")
+
+        if sys.platform == "darwin":
+            hints.append("macOS app runtime path: /Applications/iLand.app/Contents/MacOS/iLANDc")
+        elif os.name != "nt":
+            hints.append("Linux runtime path: /usr/local/bin/iLANDc")
+
+        return hints
 
     def _runtime_env_for_executable(self, executable: Path) -> Dict[str, str]:
         env = dict(os.environ)
@@ -2646,7 +2684,47 @@ class ILandDockWidget(QDockWidget):
                 return name == "ilandc.exe"
             if name == "ilandc":
                 return True
-            return name.startswith("ilandc") and not name.endswith(".exe")
+            if "ilandc" not in name:
+                return False
+
+            # For native platforms, allow iLANDc-like executable names (e.g., ilandc-macos),
+            # but avoid source/artifact files with known non-runtime extensions.
+            blocked_suffixes = {
+                ".pro",
+                ".pri",
+                ".cpp",
+                ".cc",
+                ".cxx",
+                ".c",
+                ".h",
+                ".hpp",
+                ".hh",
+                ".txt",
+                ".md",
+                ".json",
+                ".xml",
+                ".a",
+                ".so",
+                ".dylib",
+                ".dll",
+                ".lib",
+                ".zip",
+                ".tar",
+                ".gz",
+            }
+            if path.suffix.lower() in blocked_suffixes:
+                return False
+
+            if name.startswith("ilandc") and not name.endswith(".exe"):
+                try:
+                    return bool(path.stat().st_mode & 0o111)
+                except Exception:
+                    return False
+
+            try:
+                return bool(path.stat().st_mode & 0o111)
+            except Exception:
+                return False
 
         def first_valid(candidates: List[Path]) -> Optional[Path]:
             for candidate in candidates:
@@ -2671,13 +2749,28 @@ class ILandDockWidget(QDockWidget):
                 for name in ["iLANDc", "ilandc"]:
                     candidates.append(macos_dir / name)
 
-            for root_name in ["runtime", "runtimes", "bin", "dist", "release", "x64", "Contents", "MacOS"]:
+            for root_name in [
+                "runtime",
+                "runtimes",
+                "bin",
+                "dist",
+                "release",
+                "x64",
+                "build",
+                "out",
+                "Contents",
+                "MacOS",
+                "macos",
+                "linux",
+                "windows",
+            ]:
                 root = path / root_name
                 if not root.exists() or not root.is_dir():
                     continue
                 candidates.extend(list(root.rglob("iLANDc.exe")))
                 candidates.extend(list(root.rglob("iLANDc")))
                 candidates.extend(list(root.rglob("ilandc")))
+                candidates.extend(list(root.rglob("*ilandc*")))
 
             return candidates
 
@@ -2698,6 +2791,24 @@ class ILandDockWidget(QDockWidget):
             if found is not None:
                 return found
 
+            # Recover from stale values (e.g., saved ilandc.pro path) by probing
+            # nearby directories where a native ilandc binary may actually exist.
+            nearby_candidates: List[Path] = []
+            if saved_path.exists():
+                if saved_path.is_file():
+                    nearby_candidates.extend(expand_candidate(saved_path.parent))
+                    nearby_candidates.extend(expand_candidate(saved_path.parent.parent))
+                elif saved_path.is_dir():
+                    nearby_candidates.extend(expand_candidate(saved_path))
+
+            found = first_valid(nearby_candidates)
+            if found is not None:
+                try:
+                    self.config.set_string("workflow_executable_path", str(found.resolve()))
+                except Exception:
+                    pass
+                return found
+
             # Allow command-style saved values like "ilandc" that resolve via PATH.
             if os.sep not in saved and "/" not in saved and "\\" not in saved:
                 which_path = shutil.which(saved)
@@ -2705,6 +2816,13 @@ class ILandDockWidget(QDockWidget):
                     which_candidate = Path(which_path)
                     if is_ilandc(which_candidate):
                         return which_candidate
+
+            # Saved value is present but invalid for current platform; clear it to avoid
+            # repeated false hints and allow fresh auto-discovery/local registration.
+            try:
+                self.config.set_string("workflow_executable_path", "")
+            except Exception:
+                pass
 
         bundled_candidates = [
             self.plugin_dir / "iLANDc.exe",
@@ -2716,12 +2834,16 @@ class ILandDockWidget(QDockWidget):
             self.plugin_dir / "runtime" / platform_key / "iLANDc.exe",
             self.plugin_dir / "runtime" / platform_key / "iLANDc",
             self.plugin_dir / "runtime" / platform_key / "ilandc",
+            self.plugin_dir / "runtime" / platform_key / "bin" / "iLANDc",
+            self.plugin_dir / "runtime" / platform_key / "bin" / "ilandc",
             self.plugin_dir / "runtimes" / "iLANDc.exe",
             self.plugin_dir / "runtimes" / "iLANDc",
             self.plugin_dir / "runtimes" / "ilandc",
             self.plugin_dir / "runtimes" / platform_key / "iLANDc.exe",
             self.plugin_dir / "runtimes" / platform_key / "iLANDc",
             self.plugin_dir / "runtimes" / platform_key / "ilandc",
+            self.plugin_dir / "runtimes" / platform_key / "bin" / "iLANDc",
+            self.plugin_dir / "runtimes" / platform_key / "bin" / "ilandc",
             self.plugin_dir / "bin" / "iLANDc.exe",
             self.plugin_dir / "bin" / "iLANDc",
             self.plugin_dir / "bin" / "ilandc",
@@ -2730,11 +2852,16 @@ class ILandDockWidget(QDockWidget):
         if found is not None:
             return found
 
-        for root_name in ["runtime", "runtimes", "bin", "dist", "release", "x64"]:
+        for root_name in ["runtime", "runtimes", "bin", "dist", "release", "x64", "build", "out"]:
             root = self.plugin_dir / root_name
             if not root.exists() or not root.is_dir():
                 continue
-            hits = list(root.rglob("iLANDc.exe")) + list(root.rglob("iLANDc")) + list(root.rglob("ilandc"))
+            hits = (
+                list(root.rglob("iLANDc.exe"))
+                + list(root.rglob("iLANDc"))
+                + list(root.rglob("ilandc"))
+                + list(root.rglob("*ilandc*"))
+            )
             found = first_valid(hits)
             if found is not None:
                 return found
@@ -2750,10 +2877,14 @@ class ILandDockWidget(QDockWidget):
                     project_dir / "ilandc",
                     project_dir / "runtime" / platform_key / "iLANDc",
                     project_dir / "runtime" / platform_key / "ilandc",
+                    project_dir / "runtime" / platform_key / "bin" / "iLANDc",
+                    project_dir / "runtime" / platform_key / "bin" / "ilandc",
                     project_dir / "runtime" / "iLANDc",
                     project_dir / "runtime" / "ilandc",
                     project_dir / "runtimes" / platform_key / "iLANDc",
                     project_dir / "runtimes" / platform_key / "ilandc",
+                    project_dir / "runtimes" / platform_key / "bin" / "iLANDc",
+                    project_dir / "runtimes" / platform_key / "bin" / "ilandc",
                     project_dir / "runtimes" / "iLANDc",
                     project_dir / "runtimes" / "ilandc",
                     project_dir / "bin" / "iLANDc",
@@ -2765,11 +2896,16 @@ class ILandDockWidget(QDockWidget):
                 if found is not None:
                     return found
 
-                for root_name in ["runtime", "runtimes", "build", "bin", "dist", "release", "x64"]:
+                for root_name in ["runtime", "runtimes", "build", "bin", "dist", "release", "x64", "out"]:
                     root = project_dir / root_name
                     if not root.exists() or not root.is_dir():
                         continue
-                    hits = list(root.rglob("iLANDc.exe")) + list(root.rglob("iLANDc")) + list(root.rglob("ilandc"))
+                    hits = (
+                        list(root.rglob("iLANDc.exe"))
+                        + list(root.rglob("iLANDc"))
+                        + list(root.rglob("ilandc"))
+                        + list(root.rglob("*ilandc*"))
+                    )
                     found = first_valid(hits)
                     if found is not None:
                         return found

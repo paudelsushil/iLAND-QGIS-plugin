@@ -14,6 +14,13 @@ Maintainer: Sushil Paudel
 
 ## Release Notes
 
+### v4.0.4
+
+- Fixed macOS runtime publish edge case caused by case-insensitive filesystem symlink collisions (`iLANDc`/`ilandc`), ensuring bundled runtime remains executable.
+- Hardened native runtime discovery and stale-path recovery to prevent non-executable/source artifacts from being selected as runtime binaries.
+- Improved macOS runtime build helper with Qt/qmake auto-detection and explicit permission prompts before Homebrew dependency installs.
+- Included `runtime/macos/build_mac_runtime.sh` in release ZIP payload for end-user runtime rebuild convenience.
+
 ### v4.0.3
 
 - Improved cross-platform runtime behavior for iLANDc: OS-aware executable resolution with PATH-first lookup and safer non-Windows handling.
@@ -135,7 +142,7 @@ Main processing tools (menu order in QGIS Processing > iLAND Workbench):
                    hassle-free installation and reproducible analysis 
                    workflows}},
   year         = {2026},
-  version      = {4.0.3},
+  version      = {4.0.4},
   publisher    = {Zenodo},
   doi          = {10.5281/zenodo.19300115},
   url          = {https://doi.org/10.5281/zenodo.19300115}
