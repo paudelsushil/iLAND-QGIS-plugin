@@ -14,6 +14,14 @@ Maintainer: Sushil Paudel
 
 ## Release Notes
 
+### v4.0.3
+
+- Improved cross-platform runtime behavior for iLANDc: OS-aware executable resolution with PATH-first lookup and safer non-Windows handling.
+- Added Runtime tab support to register a local native runtime executable for macOS/Linux workflows.
+- Added project-folder and bundled-runtime discovery paths for native iLANDc binaries.
+- Added first-time legacy XML workflow safeguard: prompt to save a QGIS project when none exists in the XML directory.
+- Hardened landscape validation compatibility for original iLAND project inputs (quoted/whitespace environment formats and database path resolution).
+
 ### v4.0.2
 
 - Reworked QGIS 4 main-menu integration: iLAND is now exposed as a top-level menu and no longer auto-opens plugin UI at load time.
@@ -127,7 +135,7 @@ Main processing tools (menu order in QGIS Processing > iLAND Workbench):
                    hassle-free installation and reproducible analysis 
                    workflows}},
   year         = {2026},
-  version      = {4.0.2},
+  version      = {4.0.3},
   publisher    = {Zenodo},
   doi          = {10.5281/zenodo.19300115},
   url          = {https://doi.org/10.5281/zenodo.19300115}
