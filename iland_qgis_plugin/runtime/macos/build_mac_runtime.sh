@@ -40,6 +40,14 @@ PLUGIN_RUNTIME_TARGET="$PLUGIN_RUNTIME_DIR/iLANDc"
 PLUGIN_RUNTIME_ALIAS="$PLUGIN_RUNTIME_DIR/ilandc"
 
 AUTO_INSTALL_DEPS="${AUTO_INSTALL_DEPS:-0}"
+FORCE_REBUILD="${FORCE_REBUILD:-0}"
+PREFER_EXISTING_RUNTIME="${PREFER_EXISTING_RUNTIME:-1}"
+QMAKE_DETECTED_VERSION=""
+
+# Behavior flags:
+#   AUTO_INSTALL_DEPS=1        -> non-interactive dependency installation prompts accepted
+#   PREFER_EXISTING_RUNTIME=1  -> reuse already built native ilandc when possible (default)
+#   FORCE_REBUILD=1            -> always rebuild from source, even if runtime already exists
 
 ask_permission() {
     local prompt="$1"
@@ -89,12 +97,48 @@ find_qmake() {
     done
 
     local candidate
+    local qt_version
+    local qt_major
+    local best_path=""
+    local best_version=""
+    local fallback_path=""
+    local fallback_version=""
+
     for candidate in "${candidates[@]}"; do
-        if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-            echo "$candidate"
-            return 0
+        if [ -z "$candidate" ] || [ ! -x "$candidate" ]; then
+            continue
+        fi
+
+        qt_version="$($candidate -query QT_VERSION 2>/dev/null || true)"
+        if [ -z "$qt_version" ]; then
+            continue
+        fi
+
+        if [ -z "$fallback_path" ]; then
+            fallback_path="$candidate"
+            fallback_version="$qt_version"
+        fi
+
+        qt_major="${qt_version%%.*}"
+        if [[ "$qt_major" =~ ^[0-9]+$ ]] && [ "$qt_major" -ge 6 ]; then
+            if [ -z "$best_version" ] || [ "$(printf '%s\n%s\n' "$best_version" "$qt_version" | sort -V | tail -n1)" = "$qt_version" ]; then
+                best_path="$candidate"
+                best_version="$qt_version"
+            fi
         fi
     done
+
+    if [ -n "$best_path" ]; then
+        QMAKE_DETECTED_VERSION="$best_version"
+        echo "$best_path"
+        return 0
+    fi
+
+    if [ -n "$fallback_path" ]; then
+        QMAKE_DETECTED_VERSION="$fallback_version"
+        echo "$fallback_path"
+        return 0
+    fi
 
     return 1
 }
@@ -103,6 +147,7 @@ find_qmake() {
 #   ILAND_SOURCE_DIR=/path/to/iland-model ./build_mac_runtime.sh
 ILAND_SOURCE_DIR="${ILAND_SOURCE_DIR:-$HOME/Documents/iland-model}"
 BUILD_LOG="$ILAND_SOURCE_DIR/build.log"
+HOST_ARCH="$(uname -m)"
 
 # Detect Mac architecture
 if [[ $(uname -m) == "arm64" ]]; then
@@ -112,6 +157,93 @@ else
     echo -e "${GREEN}Detected Intel Mac${NC}"
     HOMEBREW_PREFIX="/usr/local"
 fi
+
+is_native_runtime_candidate() {
+    local candidate="$1"
+    if [ ! -f "$candidate" ] || [ ! -x "$candidate" ]; then
+        return 1
+    fi
+
+    if ! command -v file >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local file_info
+    file_info="$(file "$candidate" 2>/dev/null || true)"
+    if [ -z "$file_info" ]; then
+        return 0
+    fi
+
+    case "$HOST_ARCH" in
+        arm64|aarch64)
+            [[ "$file_info" == *"arm64"* || "$file_info" == *"aarch64"* || "$file_info" == *"universal"* ]] || return 1
+            ;;
+        x86_64)
+            [[ "$file_info" == *"x86_64"* || "$file_info" == *"universal"* ]] || return 1
+            ;;
+    esac
+
+    return 0
+}
+
+find_existing_runtime() {
+    local candidates=()
+    local path_runtime=""
+
+    candidates+=("$PLUGIN_RUNTIME_TARGET")
+    candidates+=("$PLUGIN_RUNTIME_ALIAS")
+    candidates+=("$ILAND_SOURCE_DIR/src/ilandc/ilandc")
+    candidates+=("$HOME/Documents/iland-model/src/ilandc/ilandc")
+    candidates+=("$HOME/Documents/iland-model-main/src/ilandc/ilandc")
+
+    path_runtime="$(command -v ilandc 2>/dev/null || true)"
+    if [ -n "$path_runtime" ]; then
+        candidates+=("$path_runtime")
+    fi
+    path_runtime="$(command -v iLANDc 2>/dev/null || true)"
+    if [ -n "$path_runtime" ]; then
+        candidates+=("$path_runtime")
+    fi
+
+    local candidate
+    for candidate in "${candidates[@]}"; do
+        if [ -z "$candidate" ]; then
+            continue
+        fi
+        if is_native_runtime_candidate "$candidate"; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+publish_runtime() {
+    local source_runtime="$1"
+    if [ ! -f "$source_runtime" ]; then
+        echo -e "${RED}ERROR: Runtime source not found: $source_runtime${NC}"
+        return 1
+    fi
+
+    if ! is_native_runtime_candidate "$source_runtime"; then
+        echo -e "${RED}ERROR: Runtime source is not a compatible native executable: $source_runtime${NC}"
+        return 1
+    fi
+
+    rm -f "$PLUGIN_RUNTIME_TARGET" "$PLUGIN_RUNTIME_ALIAS"
+    install -m 755 "$source_runtime" "$PLUGIN_RUNTIME_TARGET"
+
+    if [ ! -x "$PLUGIN_RUNTIME_TARGET" ]; then
+        echo -e "${RED}ERROR: Published runtime is not executable: $PLUGIN_RUNTIME_TARGET${NC}"
+        return 1
+    fi
+
+    echo -e "${GREEN}✓ Runtime published to plugin:${NC}"
+    echo -e "  ${BLUE}$PLUGIN_RUNTIME_TARGET${NC}"
+    echo -e "  ${YELLOW}(alias skipped on macOS to avoid case-insensitive symlink collisions)${NC}"
+    return 0
+}
 
 #==============================================================================
 # STEP 1: Install Dependencies (Homebrew, Qt6, FreeImage)
@@ -148,7 +280,18 @@ if [ -z "$QMAKE_PATH" ]; then
         exit 1
     fi
 fi
-echo -e "${GREEN}✓ Qt qmake detected: $QMAKE_PATH${NC}"
+
+if [ -z "$QMAKE_DETECTED_VERSION" ]; then
+    QMAKE_DETECTED_VERSION="$($QMAKE_PATH -query QT_VERSION 2>/dev/null || true)"
+fi
+QMAKE_MAJOR="${QMAKE_DETECTED_VERSION%%.*}"
+if ! [[ "$QMAKE_MAJOR" =~ ^[0-9]+$ ]] || [ "$QMAKE_MAJOR" -lt 6 ]; then
+    echo -e "${RED}ERROR: Detected qmake is Qt ${QMAKE_DETECTED_VERSION:-unknown}. Qt6 is required.${NC}"
+    echo -e "${YELLOW}Set QMAKE_PATH explicitly or install qt@6 and retry.${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✓ Qt qmake detected: $QMAKE_PATH (Qt $QMAKE_DETECTED_VERSION)${NC}"
 
 # Install FreeImage
 if brew list freeimage &> /dev/null; then
@@ -220,6 +363,22 @@ fi
 
 mkdir -p "$PLUGIN_RUNTIME_DIR"
 echo -e "${GREEN}✓ Plugin runtime directory ready: $PLUGIN_RUNTIME_DIR${NC}"
+
+#==============================================================================
+# STEP 3A: Reuse Existing Runtime (if available)
+#==============================================================================
+
+if [ "$FORCE_REBUILD" != "1" ] && [ "$PREFER_EXISTING_RUNTIME" = "1" ]; then
+    echo -e "\n${YELLOW}STEP 3A: Checking for existing native runtime...${NC}"
+    EXISTING_RUNTIME="$(find_existing_runtime || true)"
+    if [ -n "$EXISTING_RUNTIME" ]; then
+        echo -e "${GREEN}✓ Reusing existing runtime:${NC} ${BLUE}$EXISTING_RUNTIME${NC}"
+        publish_runtime "$EXISTING_RUNTIME"
+        echo -e "${GREEN}Runtime ready. Skipping rebuild (set FORCE_REBUILD=1 to force compile).${NC}"
+        exit 0
+    fi
+    echo -e "${YELLOW}No reusable native runtime found; continuing with source build.${NC}"
+fi
 
 #==============================================================================
 # STEP 4: Add C++17 to all .pro files (required for std::is_same_v)
@@ -309,7 +468,7 @@ echo -e "  (This may take a few minutes)"
 cd "$ILAND_SOURCE_DIR/src/plugins"
 
 echo -e "  Running qmake for plugins..."
-qmake plugins.pro CONFIG+=sdk_no_version_check 2>&1 | tee -a "$BUILD_LOG"
+"$QMAKE_PATH" plugins.pro CONFIG+=sdk_no_version_check 2>&1 | tee -a "$BUILD_LOG"
 
 echo -e "  Compiling plugins..."
 make -j$(sysctl -n hw.ncpu) 2>&1 | tee -a "$BUILD_LOG"
@@ -335,7 +494,7 @@ echo -e "  (This may take several minutes)"
 cd "$ILAND_SOURCE_DIR/src/ilandc"
 
 echo -e "  Running qmake for ilandc..."
-qmake ilandc.pro CONFIG+=sdk_no_version_check 2>&1 | tee -a "$BUILD_LOG"
+"$QMAKE_PATH" ilandc.pro CONFIG+=sdk_no_version_check 2>&1 | tee -a "$BUILD_LOG"
 
 echo -e "  Compiling ilandc..."
 make -j$(sysctl -n hw.ncpu) 2>&1 | tee -a "$BUILD_LOG"
@@ -362,19 +521,8 @@ if [ -f "$ILAND_SOURCE_DIR/src/ilandc/ilandc" ]; then
     "$ILAND_SOURCE_DIR/src/ilandc/ilandc" 2>&1 | head -20
 
     echo -e "\n${YELLOW}STEP 10: Publishing runtime for plugin auto-detection...${NC}"
-    rm -f "$PLUGIN_RUNTIME_TARGET" "$PLUGIN_RUNTIME_ALIAS"
-    install -m 755 "$ILAND_SOURCE_DIR/src/ilandc/ilandc" "$PLUGIN_RUNTIME_TARGET"
-
-    echo -e "${GREEN}✓ Runtime published to plugin:${NC}"
-    echo -e "  ${BLUE}$PLUGIN_RUNTIME_TARGET${NC}"
-    echo -e "  ${YELLOW}(alias skipped on macOS to avoid case-insensitive symlink collisions)${NC}"
-
-    if [ -x "$PLUGIN_RUNTIME_TARGET" ]; then
-        echo -e "${GREEN}✓ Plugin runtime is executable and ready${NC}"
-    else
-        echo -e "${RED}ERROR: Published runtime is not executable: $PLUGIN_RUNTIME_TARGET${NC}"
-        exit 1
-    fi
+    publish_runtime "$ILAND_SOURCE_DIR/src/ilandc/ilandc"
+    echo -e "${GREEN}✓ Plugin runtime is executable and ready${NC}"
 
     echo -e ""
     echo -e "${GREEN}You can now run iLand with:${NC}"

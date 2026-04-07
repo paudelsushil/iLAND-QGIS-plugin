@@ -14,6 +14,14 @@ Maintainer: Sushil Paudel
 
 ## Release Notes
 
+### v4.0.5
+
+- Expanded native runtime discovery for macOS/Linux to include common source-build outputs, project-adjacent model folders, and `ILAND_SOURCE_DIR`-driven paths.
+- Improved runtime diagnostics and search hints when executable resolution fails, reducing setup friction for non-Windows users.
+- Restored robust untitled-QGIS project detection for XML-based Create Model workflows so save/search prompts trigger reliably.
+- Added original iLand-inspired default visualization palettes and terrain-derived shading defaults to better align map styling with native iLand behavior.
+- Hardened `runtime/macos/build_mac_runtime.sh` with highest-available Qt6 selection, existing-runtime reuse, architecture validation, deterministic qmake usage, and Bash-safe LF formatting.
+
 ### v4.0.4
 
 - Fixed macOS runtime publish edge case caused by case-insensitive filesystem symlink collisions (`iLANDc`/`ilandc`), ensuring bundled runtime remains executable.
@@ -142,7 +150,7 @@ Main processing tools (menu order in QGIS Processing > iLAND Workbench):
                    hassle-free installation and reproducible analysis 
                    workflows}},
   year         = {2026},
-  version      = {4.0.4},
+  version      = {4.0.5},
   publisher    = {Zenodo},
   doi          = {10.5281/zenodo.19300115},
   url          = {https://doi.org/10.5281/zenodo.19300115}

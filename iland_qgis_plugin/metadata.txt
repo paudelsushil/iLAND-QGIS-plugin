@@ -4,7 +4,7 @@ category=Vector
 qgisMinimumVersion=3.28
 qgisMaximumVersion=4.99
 author=Sushil Paudel
-version=4.0.4
+version=4.0.5
 email=clarkesushil@gmail.com
 description=QGIS-based iLAND Workbench developed for hassle-free installation and reproducible analysis workflows.
 about=This plugin was developed as the third chapter analysis work of a PhD dissertation. 
@@ -19,4 +19,4 @@ tags=iLAND, forest, landscape, disturbance-simulation, process-based-modelling, 
 hasProcessingProvider=True
 
 [help]
-changelog=4.0.4 Patch release: fixed macOS runtime publishing edge cases (case-insensitive symlink collisions), improved native executable resolution safety/recovery, added permission-gated dependency installation with Qt auto-detection in mac runtime builder, and shipped runtime build helper script in release payload.
+changelog=4.0.5 Patch release: expanded native runtime auto-discovery (including ILAND_SOURCE_DIR and common source-build paths), improved runtime diagnostics for macOS/Linux, restored robust untitled-QGIS XML prompt handling, added original iLand-inspired default visualization palettes, and hardened the macOS runtime build script with Qt6 version selection, existing-runtime reuse, and architecture-safe publishing.

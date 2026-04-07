@@ -2278,6 +2278,7 @@ class ILandDockWidget(QDockWidget):
     def _runtime_resolution_hints(self) -> List[str]:
         platform_key = "windows" if os.name == "nt" else ("macos" if sys.platform == "darwin" else "linux")
         hints: List[str] = []
+        iland_source_env = os.environ.get("ILAND_SOURCE_DIR", "").strip()
 
         saved = self.config.get_string("workflow_executable_path", "").strip()
         if saved:
@@ -2294,11 +2295,19 @@ class ILandDockWidget(QDockWidget):
                 project_dir = project_path.resolve().parent
                 hints.append(f"Project-adjacent runtime folder: {project_dir / 'runtime' / platform_key}")
                 hints.append(f"Project-adjacent bin folder: {project_dir / 'bin'}")
+                hints.append(f"Project-adjacent iland-model-main build: {project_dir.parent / 'iland-model-main' / 'src' / 'ilandc' / 'ilandc'}")
 
         if sys.platform == "darwin":
             hints.append("macOS app runtime path: /Applications/iLand.app/Contents/MacOS/iLANDc")
+            hints.append(f"Common source-build path: {Path.home() / 'Documents' / 'iland-model' / 'src' / 'ilandc' / 'ilandc'}")
+            hints.append(f"Common source-build path: {Path.home() / 'Documents' / 'iland-model-main' / 'src' / 'ilandc' / 'ilandc'}")
         elif os.name != "nt":
             hints.append("Linux runtime path: /usr/local/bin/iLANDc")
+            hints.append(f"Common source-build path: {Path.home() / 'iland-model' / 'src' / 'ilandc' / 'ilandc'}")
+            hints.append(f"Common source-build path: {Path.home() / 'iland-model-main' / 'src' / 'ilandc' / 'ilandc'}")
+
+        if iland_source_env:
+            hints.append(f"ILAND_SOURCE_DIR runtime path: {Path(iland_source_env).expanduser() / 'src' / 'ilandc' / 'ilandc'}")
 
         return hints
 
@@ -2837,6 +2846,7 @@ class ILandDockWidget(QDockWidget):
             return candidates
 
         platform_key = "windows" if os.name == "nt" else ("macos" if sys.platform == "darwin" else "linux")
+        iland_source_env = os.environ.get("ILAND_SOURCE_DIR", "").strip()
 
         # Prefer system/runtime-independent discovery first so global ilandc works without plugin runtime setup.
         for candidate_name in ["iLANDc.exe", "iLANDc", "ilandc"]:
@@ -2972,6 +2982,16 @@ class ILandDockWidget(QDockWidget):
                     if found is not None:
                         return found
 
+                project_related_source_builds = [
+                    project_dir.parent / "iland-model" / "src" / "ilandc" / "ilandc",
+                    project_dir.parent / "iland-model-main" / "src" / "ilandc" / "ilandc",
+                    project_dir.parent / "iLand-model" / "src" / "ilandc" / "ilandc",
+                    project_dir.parent / "iLand-model-main" / "src" / "ilandc" / "ilandc",
+                ]
+                found = first_valid(project_related_source_builds)
+                if found is not None:
+                    return found
+
         common_candidates = [
             self.repo_root / "iLANDc.exe",
             self.repo_root / "build" / "iLANDc.exe",
@@ -2996,7 +3016,15 @@ class ILandDockWidget(QDockWidget):
                 Path("/Applications/iland.app/Contents/MacOS/ilandc"),
                 Path.home() / "Applications" / "iLand.app" / "Contents" / "MacOS" / "iLANDc",
                 Path.home() / "Applications" / "iLand.app" / "Contents" / "MacOS" / "ilandc",
+                Path.home() / "Documents" / "iland-model" / "src" / "ilandc" / "ilandc",
+                Path.home() / "Documents" / "iland-model-main" / "src" / "ilandc" / "ilandc",
+                Path.home() / "Documents" / "iLand-model" / "src" / "ilandc" / "ilandc",
+                Path.home() / "Documents" / "iLand-model-main" / "src" / "ilandc" / "ilandc",
+                Path.home() / "iland-model" / "src" / "ilandc" / "ilandc",
+                Path.home() / "iland-model-main" / "src" / "ilandc" / "ilandc",
             ]
+            if iland_source_env:
+                mac_default_candidates.append(Path(iland_source_env).expanduser() / "src" / "ilandc" / "ilandc")
             applications_dir = Path("/Applications")
             if applications_dir.exists() and applications_dir.is_dir():
                 for app in applications_dir.glob("*.app"):
@@ -3016,7 +3044,13 @@ class ILandDockWidget(QDockWidget):
                 Path("/opt/iland/ilandc"),
                 Path("/opt/iLand/iLANDc"),
                 Path("/opt/iLand/ilandc"),
+                Path.home() / "iland-model" / "src" / "ilandc" / "ilandc",
+                Path.home() / "iland-model-main" / "src" / "ilandc" / "ilandc",
+                Path.home() / "Documents" / "iland-model" / "src" / "ilandc" / "ilandc",
+                Path.home() / "Documents" / "iland-model-main" / "src" / "ilandc" / "ilandc",
             ]
+            if iland_source_env:
+                linux_default_candidates.append(Path(iland_source_env).expanduser() / "src" / "ilandc" / "ilandc")
             found = first_valid(linux_default_candidates)
             if found is not None:
                 return found
