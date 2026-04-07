@@ -31,6 +31,7 @@ import subprocess
 import sys
 import threading
 import time
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -138,11 +139,28 @@ from .runtime_manager import ILandRuntimeManager
 from .settings_dialog import ILandSettingsDialog
 
 try:
-    from qgis.core import QgsProject, QgsRasterLayer, QgsVectorLayer  # type: ignore[import-not-found]
+    from qgis.core import (  # type: ignore[import-not-found]
+        QgsColorRampShader,
+        QgsProject,
+        QgsRasterBandStats,
+        QgsRasterLayer,
+        QgsRasterShader,
+        QgsSingleBandPseudoColorRenderer,
+        QgsVectorLayer,
+    )
 except Exception:  # pragma: no cover
+    QgsColorRampShader = None
     QgsProject = None
+    QgsRasterBandStats = None
     QgsRasterLayer = None
+    QgsRasterShader = None
+    QgsSingleBandPseudoColorRenderer = None
     QgsVectorLayer = None
+
+try:
+    from osgeo import gdal  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover
+    gdal = None
 
 
 class ILandDockWidget(QDockWidget):
@@ -205,10 +223,13 @@ class ILandDockWidget(QDockWidget):
         self._model_created = False
         self._active_run_mode = ""
         self._current_year = 0
+        self._active_start_year = 0
         self._active_target_year = 0
         self._active_requested_years = 0
         self._runtime_reported_year = 0
         self._last_run_year_request = 10
+        self._last_visualized_runtime_year = 0
+        self._last_visual_refresh_ts = 0.0
         self._legacy_cli_executable = ""
         self._is_loading_ui_state = False
         self._model_poll_timer = None
@@ -2121,7 +2142,10 @@ class ILandDockWidget(QDockWidget):
             self._model_poll_timer.stop()
         self._model_paused = False
         self._active_run_mode = ""
+        self._active_start_year = 0
         self._runtime_reported_year = self._current_year
+        self._last_visualized_runtime_year = self._current_year
+        self._last_visual_refresh_ts = 0.0
         self.last_run_process = None
         self.model_run_progress.setMinimum(0)
         self.model_run_progress.setMaximum(1)
@@ -2146,9 +2170,12 @@ class ILandDockWidget(QDockWidget):
         self._model_paused = False
         self._model_created = False
         self._active_run_mode = ""
+        self._active_start_year = 0
         self._active_target_year = 0
         self._active_requested_years = 0
         self._runtime_reported_year = 0
+        self._last_visualized_runtime_year = 0
+        self._last_visual_refresh_ts = 0.0
         self._session_stop_requested = False
         self._session_last_error = ""
         self._session_run_requested_years = 0
@@ -2346,9 +2373,12 @@ class ILandDockWidget(QDockWidget):
             self.last_run_started_at = datetime.now()
             self._model_paused = False
             self._active_run_mode = run_mode
+            self._active_start_year = max(1, self._current_year)
             self._active_requested_years = max(0, requested_increment)
             self._active_target_year = max(0, target_year)
             self._runtime_reported_year = self._current_year
+            self._last_visualized_runtime_year = self._current_year
+            self._last_visual_refresh_ts = 0.0
             self.status_label.setText(f"iLAND started (PID {self.last_run_process.pid}). Command: {command_preview}")
             self._append_workflow_log(f"Started iLAND process PID {self.last_run_process.pid}")
             self._append_workflow_log(f"Execution mode: iLANDc headless (cwd={project_dir})")
@@ -2388,8 +2418,11 @@ class ILandDockWidget(QDockWidget):
             if isinstance(exc, FileNotFoundError):
                 self._append_workflow_log("Hint: open Runtime tab and install/activate a valid iLANDc runtime.")
             self._active_run_mode = ""
+            self._active_start_year = 0
             self._active_requested_years = 0
             self._active_target_year = 0
+            self._last_visualized_runtime_year = self._current_year
+            self._last_visual_refresh_ts = 0.0
             self._update_run_controls_state()
 
     def _consume_model_output(self, process: subprocess.Popen):
@@ -2400,9 +2433,9 @@ class ILandDockWidget(QDockWidget):
                 line = raw_line.strip()
                 if not line:
                     continue
-                match = re.search(r"simulating year\s+(\d+)", line)
+                match = re.search(r"simulating year\s+(\d+)", line, flags=re.IGNORECASE)
                 if match:
-                    reported = int(match.group(1)) + 1
+                    reported = int(match.group(1))
                     # Prevent going backwards when rerunning from baseline to a higher target.
                     self._runtime_reported_year = max(self._current_year, reported)
         except Exception:
@@ -2523,14 +2556,43 @@ class ILandDockWidget(QDockWidget):
             files.extend(p for p in folder.glob(pattern) if p.is_file())
         return sorted(files)
 
+    def _is_qgis_project_persisted(self, project: QgsProject) -> bool:
+        current_project_path = str(project.fileName() or "").strip()
+        if not current_project_path:
+            return False
+
+        lowered = current_project_path.lower()
+        # Non-file project providers (e.g., DB-backed projects) are already persisted.
+        if "://" in lowered or lowered.startswith(("postgresql:", "geopackage:", "sqlite:")):
+            return True
+
+        path_name = Path(current_project_path).name.lower()
+        if path_name.startswith("untitled"):
+            return False
+
+        try:
+            return Path(current_project_path).exists()
+        except Exception:
+            return False
+
     def _ensure_qgis_project_context_for_xml(self, project_file: str) -> bool:
         if self.iface is None or QgsProject is None:
             return True
 
         project = QgsProject.instance()
+        if self._is_qgis_project_persisted(project):
+            current_project_path = str(project.fileName() or "").strip()
+            if current_project_path:
+                self._append_workflow_log(
+                    f"Current QGIS project is saved ({current_project_path}); skipping XML-folder project prompt."
+                )
+            return True
+
         current_project_path = str(project.fileName() or "").strip()
         if current_project_path:
-            return True
+            self._append_workflow_log(
+                f"Current QGIS project path is not persisted ({current_project_path}); checking XML-folder project context."
+            )
 
         xml_path = Path(project_file)
         try:
@@ -3552,6 +3614,7 @@ class ILandDockWidget(QDockWidget):
 
         self._last_run_year_request = years_to_run
         self._active_run_mode = "run"
+        self._active_start_year = max(1, self._current_year)
         self._active_requested_years = years_to_run
         self._active_target_year = max(1, self._current_year) + years_to_run
         self._session_stop_requested = False
@@ -3560,6 +3623,8 @@ class ILandDockWidget(QDockWidget):
         self._session_run_completed_years = 0
         self._session_run_finalize_pending = False
         self._model_paused = False
+        self._last_visualized_runtime_year = self._current_year
+        self._last_visual_refresh_ts = 0.0
         self.last_run_started_at = datetime.now()
         self.model_status_label.setText(
             f"Model status: running | year {max(1, self._current_year)} -> {self._active_target_year}"
@@ -3622,6 +3687,8 @@ class ILandDockWidget(QDockWidget):
                     seconds = 0
 
                 shown_year = max(self._current_year, self._runtime_reported_year)
+                self._set_current_year_display(shown_year)
+                self._maybe_refresh_visualization_during_run(shown_year)
                 if self._model_paused:
                     self.model_status_label.setText(f"Model status: paused ({seconds}s) | year {shown_year}")
                     self._set_model_progress_state("paused")
@@ -3666,9 +3733,12 @@ class ILandDockWidget(QDockWidget):
                 self._session_run_requested_years = 0
                 self._session_run_completed_years = 0
                 self._active_run_mode = ""
+                self._active_start_year = 0
                 self._active_requested_years = 0
                 self._active_target_year = 0
                 self._runtime_reported_year = self._current_year
+                self._last_visualized_runtime_year = self._current_year
+                self._last_visual_refresh_ts = 0.0
                 self._update_run_controls_state()
                 return
 
@@ -3687,6 +3757,13 @@ class ILandDockWidget(QDockWidget):
                     self._set_model_progress_state("paused")
                 else:
                     shown_year = max(self._current_year, self._runtime_reported_year)
+                    self._set_current_year_display(shown_year)
+                    if self._active_run_mode == "run" and self._active_requested_years > 0 and self._active_target_year > 0:
+                        self.model_run_progress.setMinimum(0)
+                        self.model_run_progress.setMaximum(max(1, self._active_requested_years))
+                        progressed = max(0, shown_year - max(1, self._active_start_year))
+                        self.model_run_progress.setValue(min(progressed, self._active_requested_years))
+                    self._maybe_refresh_visualization_during_run(shown_year)
                     if self._active_target_year > 0:
                         self.model_status_label.setText(
                             f"Model status: running ({seconds}s) | year {shown_year} -> {self._active_target_year}"
@@ -3725,11 +3802,36 @@ class ILandDockWidget(QDockWidget):
             self._model_poll_timer.stop()
         self._model_paused = False
         self._active_run_mode = ""
+        self._active_start_year = 0
         self._active_requested_years = 0
         self._active_target_year = 0
         self._runtime_reported_year = self._current_year
+        self._last_visualized_runtime_year = self._current_year
+        self._last_visual_refresh_ts = 0.0
         self.last_run_process = None
         self._update_run_controls_state()
+
+    def _maybe_refresh_visualization_during_run(self, year_value: int):
+        if self._active_run_mode != "run":
+            return
+        if year_value <= self._last_visualized_runtime_year:
+            return
+        if self.iface is None:
+            self._last_visualized_runtime_year = year_value
+            return
+
+        now_ts = time.time()
+        # Keep rendering responsive when model years advance quickly.
+        if now_ts - self._last_visual_refresh_ts < 0.4:
+            return
+
+        self._last_visualized_runtime_year = year_value
+        self._last_visual_refresh_ts = now_ts
+        try:
+            self._visualize_on_qgis_canvas()
+        except Exception:
+            # Visualization refresh should never interrupt model execution.
+            pass
 
     def _open_output_folder(self):
         path = self._resolve_effective_output_dir(create=True)
@@ -3913,6 +4015,13 @@ class ILandDockWidget(QDockWidget):
             self._load_mode_output_table(mode=mode, output_dir=output_dir)
             return
 
+        self._apply_original_iland_default_style(
+            layer=layer,
+            mode=mode,
+            toggles=toggles,
+            selected_species=selected_species,
+        )
+
         opacity = 0.6 if toggles.get("draw transparent", False) else 1.0
         layer.setOpacity(opacity)
 
@@ -3921,16 +4030,17 @@ class ILandDockWidget(QDockWidget):
 
         self._load_mode_output_table(mode=mode, output_dir=output_dir)
 
-        # Optional hillshade-like context: load DEM underlay when shading is requested.
+        # Optional hillshade-like context: derive terrain rasters from DEM when available.
         if toggles.get("Shading", False) and project_dir is not None:
-            dem = self._find_project_dem(project_dir)
-            if dem is not None and dem != Path(layer.source()):
-                if self._layer_source_exists(str(dem)):
-                    dem_layer = self._find_loaded_layer_by_source(str(dem))
+            derived = self._ensure_dem_derivatives(project_dir)
+            shading_source = derived.get("hillshade") or derived.get("dem")
+            if shading_source is not None and shading_source != Path(layer.source()):
+                if self._layer_source_exists(str(shading_source)):
+                    dem_layer = self._find_loaded_layer_by_source(str(shading_source))
                 else:
-                    dem_layer = QgsRasterLayer(str(dem), "iLAND DEM")
+                    dem_layer = QgsRasterLayer(str(shading_source), "iLAND hillshade")
                     if dem_layer.isValid():
-                        dem_layer.setOpacity(0.45)
+                        dem_layer.setOpacity(0.45 if derived.get("hillshade") is not None else 0.35)
                         QgsProject.instance().addMapLayer(dem_layer)
                     else:
                         dem_layer = None
@@ -4101,10 +4211,288 @@ class ILandDockWidget(QDockWidget):
         gis_dir = project_dir / "gis"
         if not gis_dir.exists():
             return None
-        hits = list(gis_dir.rglob("*dem*.asc")) + list(gis_dir.rglob("*dem*.tif"))
+        hits = list(gis_dir.rglob("*dem*.asc")) + list(gis_dir.rglob("*dem*.tif")) + list(gis_dir.rglob("*dem*.tiff"))
         if not hits:
             return None
         return sorted(hits, key=lambda p: p.stat().st_mtime)[-1]
+
+    def _ensure_dem_derivatives(self, project_dir: Path) -> Dict[str, Path]:
+        dem = self._find_project_dem(project_dir)
+        if dem is None:
+            return {}
+
+        derivatives: Dict[str, Path] = {"dem": dem}
+        gis_dir = dem.parent
+        base = dem.stem
+        targets = {
+            "hillshade": gis_dir / f"{base}_hillshade.tif",
+            "slope": gis_dir / f"{base}_slope.tif",
+            "aspect": gis_dir / f"{base}_aspect.tif",
+        }
+
+        for kind, target in targets.items():
+            if target.exists() and target.is_file():
+                derivatives[kind] = target
+                continue
+            generated = self._generate_dem_derivative(dem, target, kind)
+            if generated is not None:
+                derivatives[kind] = generated
+
+        return derivatives
+
+    def _generate_dem_derivative(self, dem_path: Path, target_path: Path, kind: str) -> Optional[Path]:
+        if gdal is None:
+            return None
+
+        try:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            if kind == "hillshade":
+                gdal.DEMProcessing(str(target_path), str(dem_path), "hillshade")
+            elif kind == "slope":
+                gdal.DEMProcessing(str(target_path), str(dem_path), "slope")
+            elif kind == "aspect":
+                gdal.DEMProcessing(str(target_path), str(dem_path), "aspect")
+            else:
+                return None
+
+            if target_path.exists() and target_path.is_file():
+                self._append_workflow_log(f"Generated DEM {kind} derivative: {target_path.name}")
+                return target_path
+        except Exception as exc:
+            self._append_workflow_log(f"DEM {kind} derivative generation failed for {dem_path.name}: {exc}")
+        return None
+
+    def _apply_original_iland_default_style(
+        self,
+        layer,
+        mode: str,
+        toggles: Dict[str, bool],
+        selected_species: str,
+    ):
+        if (
+            layer is None
+            or QgsColorRampShader is None
+            or QgsRasterShader is None
+            or QgsSingleBandPseudoColorRenderer is None
+        ):
+            return
+
+        source_path = str(layer.source() or "")
+        if not source_path:
+            return
+
+        profile = self._select_iland_style_profile(
+            mode_key=(mode or "").lower().strip(),
+            source_name=Path(source_path.split("|")[0]).name.lower(),
+            toggles=toggles,
+            selected_species=selected_species,
+        )
+        if profile is None:
+            return
+
+        try:
+            min_val, max_val = self._resolve_iland_style_range(layer, profile)
+            if max_val <= min_val:
+                max_val = min_val + 1.0
+
+            items = self._build_iland_color_items(profile["palette"], min_val, max_val)
+            if not items:
+                return
+
+            shader = QgsRasterShader()
+            ramp = QgsColorRampShader()
+            try:
+                ramp.setColorRampType(QgsColorRampShader.Interpolated)
+            except Exception:
+                try:
+                    ramp.setColorRampType(QgsColorRampShader.ColorRampType.Interpolated)
+                except Exception:
+                    pass
+            ramp.setColorRampItemList(items)
+            shader.setRasterShaderFunction(ramp)
+            renderer = QgsSingleBandPseudoColorRenderer(layer.dataProvider(), 1, shader)
+            if hasattr(renderer, "setClassificationMin"):
+                renderer.setClassificationMin(min_val)
+            if hasattr(renderer, "setClassificationMax"):
+                renderer.setClassificationMax(max_val)
+            layer.setRenderer(renderer)
+            layer.triggerRepaint()
+            self._append_workflow_log(
+                f"Applied iLand default style '{profile['palette']}' to {Path(source_path).name} [{min_val:.3g}, {max_val:.3g}]"
+            )
+        except Exception as exc:
+            self._append_workflow_log(f"iLand default style skipped for {Path(source_path).name}: {exc}")
+
+    def _select_iland_style_profile(
+        self,
+        mode_key: str,
+        source_name: str,
+        toggles: Dict[str, bool],
+        selected_species: str,
+    ) -> Optional[Dict[str, object]]:
+        if "hillshade" in source_name:
+            return {"palette": "gray_reverse", "min": 0.0, "max": 255.0, "fixed": True}
+        if "_view" in source_name or source_name.startswith("view"):
+            return {"palette": "gray", "min": 0.0, "max": 1.0, "fixed": True}
+        if "aspect" in source_name:
+            return {"palette": "rainbow", "min": 0.0, "max": 360.0, "fixed": True}
+        if "slope" in source_name:
+            return {"palette": "rainbow", "min": 0.0, "max": 3.0, "fixed": True}
+        if "dem" in source_name and "seed" not in source_name:
+            return {"palette": "rainbow", "min": 0.0, "max": None, "fixed": False}
+
+        if mode_key == "light influence field":
+            return {"palette": "rainbow_reverse", "min": 0.0, "max": None, "fixed": False}
+        if mode_key == "seed availability":
+            return {"palette": "seed", "min": 0.0, "max": 1.0, "fixed": True}
+        if mode_key == "regeneration":
+            return {"palette": "rainbow", "min": 0.0, "max": 4.0, "fixed": True}
+        if mode_key == "dominance grid":
+            return {"palette": "rainbow", "min": 0.0, "max": 50.0, "fixed": True}
+        if mode_key == "resource units":
+            if toggles.get("color by species", False) and selected_species:
+                return {"palette": "greens", "min": 0.0, "max": None, "fixed": False}
+            return {"palette": "rainbow", "min": None, "max": None, "fixed": False}
+        if mode_key in ("individual trees", "snags"):
+            return {"palette": "rainbow", "min": None, "max": None, "fixed": False}
+        if mode_key == "other grid":
+            if any(token in source_name for token in ("ru", "objectid", "unit", "agent", "stp")):
+                return {"palette": "brewer_div", "min": 0.0, "max": None, "fixed": False}
+            if any(token in source_name for token in ("temp", "frost", "permafrost")):
+                return {"palette": "turbo", "min": None, "max": None, "fixed": False}
+            return {"palette": "rainbow", "min": None, "max": None, "fixed": False}
+
+        return {"palette": "rainbow", "min": None, "max": None, "fixed": False}
+
+    def _resolve_iland_style_range(self, layer, profile: Dict[str, object]) -> (float, float):
+        min_hint = profile.get("min")
+        max_hint = profile.get("max")
+        fixed = bool(profile.get("fixed", False))
+        band_min, band_max = self._raster_layer_band_range(layer)
+
+        if fixed and min_hint is not None and max_hint is not None:
+            return float(min_hint), float(max_hint)
+
+        min_val = float(min_hint) if min_hint is not None else (band_min if band_min is not None else 0.0)
+        max_val = float(max_hint) if max_hint is not None else (band_max if band_max is not None else min_val + 1.0)
+
+        if max_val <= min_val and band_max is not None and band_max > min_val:
+            max_val = band_max
+        if max_val <= min_val:
+            max_val = min_val + 1.0
+
+        return min_val, max_val
+
+    def _raster_layer_band_range(self, layer) -> (Optional[float], Optional[float]):
+        provider = layer.dataProvider() if hasattr(layer, "dataProvider") else None
+        if provider is None:
+            return None, None
+
+        if QgsRasterBandStats is None:
+            return None, None
+
+        try:
+            all_stats = getattr(QgsRasterBandStats, "All", None)
+            if all_stats is None:
+                all_stats = getattr(QgsRasterBandStats, "AllStats", 0)
+            stats = provider.bandStatistics(1, all_stats)
+            min_val = float(stats.minimumValue)
+            max_val = float(stats.maximumValue)
+            if math.isfinite(min_val) and math.isfinite(max_val):
+                return min_val, max_val
+        except Exception:
+            return None, None
+
+        return None, None
+
+    def _build_iland_color_items(self, palette_name: str, min_val: float, max_val: float):
+        if QgsColorRampShader is None:
+            return []
+
+        span = max_val - min_val
+        if span <= 0:
+            span = 1.0
+
+        if palette_name == "seed":
+            eps = max(span * 0.01, 1e-6)
+            sample_count = 16
+            samples = [(min_val, QColor(100, 100, 100), "0")]
+            for idx in range(sample_count):
+                t = idx / float(sample_count - 1)
+                value = min_val + eps + t * max(span - eps, eps)
+                samples.append((value, self._color_from_iland_palette("rainbow", t), ""))
+            return [QgsColorRampShader.ColorRampItem(v, c, l) for v, c, l in samples]
+
+        sample_count = 16
+        samples = []
+        for idx in range(sample_count):
+            t = idx / float(sample_count - 1)
+            value = min_val + t * span
+            color = self._color_from_iland_palette(palette_name, t)
+            samples.append(QgsColorRampShader.ColorRampItem(value, color, ""))
+        return samples
+
+    def _color_from_iland_palette(self, palette_name: str, t: float) -> QColor:
+        t = max(0.0, min(1.0, t))
+
+        if palette_name == "rainbow":
+            hue = 0.66666666666 * (1.0 - t)
+            return QColor.fromHsvF(hue, 0.95, 0.95)
+        if palette_name == "rainbow_reverse":
+            hue = 0.66666666666 * t
+            return QColor.fromHsvF(hue, 0.95, 0.95)
+        if palette_name == "gray":
+            c = int(round(t * 255))
+            return QColor(c, c, c)
+        if palette_name == "gray_reverse":
+            c = int(round((1.0 - t) * 255))
+            return QColor(c, c, c)
+        if palette_name == "greens":
+            return QColor(
+                int(round(220 - t * (220 - 11))),
+                int(round(220 - t * (220 - 111))),
+                int(round(220 - t * (220 - 19))),
+            )
+        if palette_name == "blues":
+            return QColor(
+                int(round(220 - t * (220 - 15))),
+                int(round(220 - t * (220 - 67))),
+                int(round(220 - t * (220 - 138))),
+            )
+        if palette_name == "reds":
+            return QColor(
+                int(round(240 - t * (220 - 219))),
+                int(round(240 - t * (220 - 31))),
+                int(round(240 - t * (220 - 72))),
+            )
+        if palette_name == "heat":
+            rel = 1.0 - t
+            green = 255 if rel >= 0.5 else int(round(rel * 2.0 * 255.0))
+            blue = int(round((rel - 0.5) * 2.0 * 255.0)) if rel > 0.5 else 0
+            return QColor(255, green, max(0, min(255, blue)))
+        if palette_name == "terrain":
+            terrain = [
+                "#00A600", "#24B300", "#4CBF00", "#7ACC00", "#ADD900", "#E6E600",
+                "#E8C727", "#EAB64E", "#ECB176", "#EEB99F", "#F0CFC8", "#F2F2F2",
+            ]
+            idx = min(int(round(t * (len(terrain) - 1))), len(terrain) - 1)
+            return QColor(terrain[idx])
+        if palette_name == "brewer_div":
+            brewer_div = [
+                "#543005", "#8c510a", "#bf812d", "#dfc27d", "#f6e8c3", "#f5f5f5",
+                "#c7eae5", "#80cdc1", "#35978f", "#01665e", "#003c30",
+            ]
+            idx = min(int(round(t * (len(brewer_div) - 1))), len(brewer_div) - 1)
+            return QColor(brewer_div[idx])
+        if palette_name == "turbo":
+            turbo = [
+                "#30123b", "#4668e0", "#29b6f6", "#2ae6a8", "#a0fc3c", "#f9f621", "#f78921", "#7a0403",
+            ]
+            idx = min(int(round(t * (len(turbo) - 1))), len(turbo) - 1)
+            return QColor(turbo[idx])
+
+        hue = 0.66666666666 * (1.0 - t)
+        return QColor.fromHsvF(hue, 0.95, 0.95)
 
     def _load_mode_output_table(self, mode: str, output_dir: Path):
         if QgsVectorLayer is None:
